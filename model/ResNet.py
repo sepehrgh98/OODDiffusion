@@ -50,7 +50,7 @@ class BottleneckBlock(nn.Module):
 
 
 class ResNet50(nn.Module):
-    def __init__(self, block, layers, num_classes=1):
+    def __init__(self, block, layers, num_classes=2):
         super(ResNet50, self).__init__()
         self.in_channels = 64
 

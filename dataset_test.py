@@ -43,28 +43,10 @@ def save_preprocessed_image(tensor, save_path):
 
     print(f"Image saved at: {save_path}")
 
-def save_preprocessed_batch(batch_tensor, save_prefix):
-    """
-    Saves each tensor in a batch as an individual image.
-
-    Args:
-    - batch_tensor (torch.Tensor): The batch tensor of shape [B, 3, H, W].
-    - save_prefix (str): The prefix for the file paths where images will be saved.
-    """
-    if batch_tensor.ndim != 4:
-        raise ValueError("Expected batch tensor with shape [B, 3, H, W]")
-
-    batch_size = batch_tensor.shape[0]
-    for i in range(batch_size):
-        image_tensor = batch_tensor[i]
-        save_path = f"{save_prefix}_{i}.png"  # Save each image with a unique name
-        save_preprocessed_image(image_tensor, save_path)
-
-
-
 def test_hybrid_dataset():
-    # Test directory and parameters
-    data_dir = "./test_dataset"  # Create a test dataset directory with the expected structure
+
+    data_dir = "./test_dataset"  # Update this with your dataset directory
+
     out_size = 224
     crop_type = "center"
     blur_kernel_size = 41
@@ -76,7 +58,7 @@ def test_hybrid_dataset():
     jpeg_range = [30, 100]
     valid_extensions = [".png", ".jpg", ".jpeg"]
 
-    # Create a HybridDataset instance
+    # Instantiate the HybridDataset
     dataset = HybridDataset(
         data_dir=data_dir,
         out_size=out_size,
@@ -88,30 +70,33 @@ def test_hybrid_dataset():
         downsample_range=downsample_range,
         noise_range=noise_range,
         jpeg_range=jpeg_range,
-        valid_extensions=valid_extensions,
+        valid_extensions = valid_extensions
     )
 
-    # Create a DataLoader instance for the dataset
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0)
+    # Create a DataLoader to iterate through the dataset
+    batch_size = 4
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
 
-    # Iterate over the DataLoader to test the dataset
-    for i, (gt, real, synthetic) in enumerate(dataloader):
-        print(f"Batch {i+1}")
-        print(f"Ground Truth (GT) Image Tensor Shape: {gt.shape}")
-        print(f"Real LQ Image Tensor Shape: {real.shape}")
-        print(f"Synthetic Image Tensor Shape: {synthetic.shape}")
+    # Iterate through a few batches of data to test
+    for batch_idx, (images, labels) in enumerate(dataloader):
+        print(f"Batch {batch_idx + 1}")
+        print(f"Images shape: {images.shape}")
+        print(f"Labels: {labels}")
 
-        print(f"Shape of gt before saving: {gt.shape}")
+        # Visualize a few images
+        for i in range(images.size(0)):
+            img = images[i].permute(1, 2, 0).numpy()  # Convert tensor to numpy format for plotting
+            img = (img * 0.229 + 0.485)  # De-normalize (Note: adapt based on your normalization)
+            img = img.clip(0, 1)  # Clip values to [0, 1] for visualization
 
-        save_preprocessed_batch(gt, "gt")
-        save_preprocessed_batch(real, "real")
-        save_preprocessed_batch(synthetic, "synthetic")
+            plt.imshow(img)
+            plt.title(f"Label: {labels[i].item()}")
+            plt.axis("off")
+            plt.show()
 
-
-
-        if i == 0:  # Limit to displaying the first batch for the test
+        # Exit after visualizing the first batch (optional)
+        if batch_idx == 0:
             break
-
 if __name__ == "__main__":
     # Before running this test, make sure to create a directory structure as expected by HybridDataset
     # ./test_dataset/
