@@ -4,8 +4,19 @@ node_modules/
 # Ignore all .log files
 *.log
 
-# Ignore a specific folder
-./data
+# Ignore PyTorch and model checkpoint files
+*.pt
+*.ckpt
 
-# Ignore all files with .env extension
+# Ignore Python cache directories
+__pycache__/
+
+# Ignore image files
+*.png
+
+# Ignore a specific folder (e.g., dataset or other generated data)
+data/
+
+# Ignore all files with .env extension (for environment configuration)
 *.env
+

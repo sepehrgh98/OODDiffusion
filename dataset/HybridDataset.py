@@ -1,15 +1,17 @@
-import torch
-import torch.utils.data as data
 import torchvision.transforms as transforms
-
-from typing import Sequence
-import os
-import numpy as np
-from PIL import Image
 import math
-import cv2
 
-from dataset.utils import center_crop_arr, random_crop_arr, stretch_image
+from torch.utils.data import Dataset, DataLoader
+import os
+import random
+from PIL import Image
+import numpy as np
+import cv2
+from torchvision import transforms
+
+
+from dataset.utils import center_crop_arr, random_crop_arr
+
 from dataset.degradation import (
     random_mixed_kernels,
     random_add_gaussian_noise,
@@ -18,14 +20,6 @@ from dataset.degradation import (
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-import torch
-from torch.utils.data import Dataset, DataLoader
-import os
-import random
-from PIL import Image
-import numpy as np
-import cv2
-from torchvision import transforms
 
 class HybridDataset(Dataset):
     def __init__(
@@ -65,8 +59,8 @@ class HybridDataset(Dataset):
         self.preprocess = transforms.Compose([
             transforms.ToPILImage(),  
             transforms.Resize((out_size, out_size)),  
-            transforms.ToTensor(),  
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  
+            transforms.ToTensor()
+            # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  
         ])
 
         # Load images
@@ -144,7 +138,14 @@ class HybridDataset(Dataset):
         print("[INFO] Generating synthetic images and selecting final dataset...")
         for idx, (lq_path, hq_path) in enumerate(self.image_pairs):
             # Load HQ image to generate synthetic image
-            hq_image = np.array(Image.open(hq_path).convert("RGB"))
+            hq_image = Image.open(hq_path).convert("RGB")
+            
+            hq_image = self._clip(hq_image)
+
+
+            # Shape: (h, w, c); channel order: BGR; image range: [0, 1], float32.
+            hq_image = (hq_image[..., ::-1] / 255.0).astype(np.float32)
+
 
             # Apply degradations to create a synthetic version
             synthetic_image = self._apply_degradations(hq_image)
@@ -175,6 +176,22 @@ class HybridDataset(Dataset):
 
         return final_images, final_labels
     
+    
+    def _clip(self, img):
+        if self.crop_type != "none":
+            if img.height == self.out_size and img.width == self.out_size:
+                img = np.array(img)
+            else:
+                if self.crop_type == "center":
+                    img = center_crop_arr(img, self.out_size)
+                elif self.crop_type == "random":
+                    img = random_crop_arr(img, self.out_size, min_crop_frac=0.7)
+        else:
+            assert img.height == self.out_size and img.width == self.out_size
+            img = np.array(img)
+        return img
+
+    
     def _balance_dataset(self, final_images, final_labels, excess, label):
         """
         Remove excess images to ensure equal representation.
@@ -190,20 +207,19 @@ class HybridDataset(Dataset):
     def __getitem__(self, index):
         # Load LQ or synthetic image based on final selection
         if isinstance(self.final_images[index], str):
-            # If it's a path, it's an LQ image
             img_path = self.final_images[index]
             image = Image.open(img_path).convert("RGB")
         else:
-            # If it's an array, it's a synthetic image
             image = self.final_images[index]
+
 
         # Preprocess image
         image = self._preprocess_image(np.array(image))
 
         # Get label
         label = self.final_labels[index]
-
         return image, label
+
 
     def _apply_degradations(self, img_gt):
         """
@@ -224,13 +240,16 @@ class HybridDataset(Dataset):
         )
         img_lq = cv2.filter2D(img_lq, -1, kernel)
 
+
         # Downsample
         scale = np.random.uniform(self.downsample_range[0], self.downsample_range[1])
         img_lq = cv2.resize(img_lq, (int(w // scale), int(h // scale)), interpolation=cv2.INTER_LINEAR)
 
+
         # Add noise
         if self.noise_range is not None:
             img_lq = random_add_gaussian_noise(img_lq, self.noise_range)
+
 
         # JPEG compression
         if self.jpeg_range is not None:
@@ -239,11 +258,15 @@ class HybridDataset(Dataset):
         # Resize back to original size
         img_lq = cv2.resize(img_lq, (w, h), interpolation=cv2.INTER_LINEAR)
 
+        # BGR to RGB, [0, 1]
+        img_lq = img_lq[..., ::-1].astype(np.float32)
+
         return img_lq
 
     def _preprocess_image(self, image):
-        if not isinstance(image, np.ndarray):
-            raise TypeError("[ERROR] Image must be a NumPy array")
+        if image.dtype != np.uint8:  # Assuming image values are in range [0, 1]
+          image = (image * 255).astype(np.uint8)
+        
         
         image = self.preprocess(image)
         return image

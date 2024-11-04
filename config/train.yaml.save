@@ -5,9 +5,9 @@ train:
   momentum: 0.9
   batch_size: 16
   num_workers: 0
-  num_epochs: 30 
+  num_epochs: 
   log_every: 50
-  ckpt_every: 10
+  ckpt_every: 10000
   val_every: 100
   resume: ~
 
