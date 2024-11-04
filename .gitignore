@@ -16,6 +16,7 @@ __pycache__/
 
 # Ignore a specific folder (e.g., dataset or other generated data)
 data/
+results/
 
 # Ignore all files with .env extension (for environment configuration)
 *.env

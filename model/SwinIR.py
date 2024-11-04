@@ -677,7 +677,8 @@ class SwinIR(nn.Module):
         hq_key: str="jpg",
         lq_key: str="hint",
         learning_rate: float=None,
-        weight_decay: float=None
+        weight_decay: float=None,
+        is_feature_extractor = False
     ) -> "SwinIR":
         super(SwinIR, self).__init__()
         num_in_ch = in_chans * (unshuffle_scale**2) if unshuffle else in_chans
@@ -778,6 +779,7 @@ class SwinIR(nn.Module):
 
         #####################################################################################################
         ################################ 3, high quality image reconstruction ################################
+        self.is_feature_extractor = is_feature_extractor
         if self.upsampler == 'pixelshuffle':
             # for classical SR
             self.conv_before_upsample = nn.Sequential(
@@ -864,44 +866,46 @@ class SwinIR(nn.Module):
             # for classical SR
             x = self.conv_first(x)
             x = self.conv_after_body(self.forward_features(x)) + x
-            x_features = self.conv_after_body(self.forward_features(x)) + x  # Deep feature extraction
 
-            # x = self.conv_before_upsample(x)
-            # x = self.conv_last(self.upsample(x))
+            if not self.is_feature_extractor:
+                x = self.conv_before_upsample(x)
+                x = self.conv_last(self.upsample(x))
+
         elif self.upsampler == 'pixelshuffledirect':
             # for lightweight SR
             x = self.conv_first(x)
-            x_features = self.conv_after_body(self.forward_features(x)) + x  # Deep feature extraction
+            x = self.conv_after_body(self.forward_features(x)) + x
 
+            if not self.is_feature_extractor:
+                x = self.upsample(x)
 
-            # x = self.conv_after_body(self.forward_features(x)) + x
-            # x = self.upsample(x)
         elif self.upsampler == 'nearest+conv':
             # for real-world SR
             x = self.conv_first(x)
-            x_features = self.conv_after_body(self.forward_features(x)) + x  # Deep feature extraction
+            x = self.conv_after_body(self.forward_features(x)) + x 
 
-
-            # x = self.conv_after_body(self.forward_features(x)) + x
-            # x = self.conv_before_upsample(x)
-            # x = self.lrelu(self.conv_up1(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
-            # if self.upscale == 4:
-            #     x = self.lrelu(self.conv_up2(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
-            # elif self.upscale == 8:
-            #     x = self.lrelu(self.conv_up2(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
-            #     x = self.lrelu(self.conv_up3(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
-            # x = self.conv_last(self.lrelu(self.conv_hr(x)))
+            if not self.is_feature_extractor:
+                x = self.conv_before_upsample(x)
+                x = self.lrelu(self.conv_up1(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
+                if self.upscale == 4:
+                    x = self.lrelu(self.conv_up2(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
+                elif self.upscale == 8:
+                    x = self.lrelu(self.conv_up2(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
+                    x = self.lrelu(self.conv_up3(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
+                x = self.conv_last(self.lrelu(self.conv_hr(x)))
         else:
             # for image denoising and JPEG compression artifact reduction
             x_first = self.conv_first(x)
-            x_features = self.conv_after_body(self.forward_features(x_first)) + x_first
-            # x = x + self.conv_last(res)
+            x = self.conv_after_body(self.forward_features(x_first)) + x_first
 
-        return x_features
+            if not self.is_feature_extractor:
+                x = x + self.conv_last(x)
 
-        # x = x / self.img_range + self.mean
-
-        # return x[:, :, :H*self.upscale, :W*self.upscale]
+        if self.is_feature_extractor:
+            return x
+        else:
+            x = x / self.img_range + self.mean
+            return x[:, :, :H*self.upscale, :W*self.upscale]
 
     def flops(self) -> int:
         flops = 0
