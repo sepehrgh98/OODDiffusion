@@ -3,10 +3,17 @@ from typing import Tuple, Set, List, Dict
 import torch
 from torch import nn
 
-from model import (
-    ControlledUnetModel, ControlNet,
-    AutoencoderKL, FrozenOpenCLIPEmbedder
+from model.controlnet import (
+    ControlledUnetModel,
+    ControlNet
 )
+
+from model.vae import AutoencoderKL
+from model.clip import FrozenOpenCLIPEmbedder
+# from model import (
+#     ControlledUnetModel, ControlNet,
+#     AutoencoderKL, FrozenOpenCLIPEmbedder
+# )
 from utils import sliding_windows, count_vram_usage, gaussian_weights
 
 

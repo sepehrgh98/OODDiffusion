@@ -7,6 +7,11 @@ node_modules/
 # Ignore PyTorch and model checkpoint files
 *.pt
 *.ckpt
+*.csv
+*.save
+*.pth
+*.gz
+
 
 # Ignore Python cache directories
 __pycache__/

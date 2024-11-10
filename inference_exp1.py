@@ -5,6 +5,7 @@ import torch
 from einops import rearrange
 import os
 import csv
+from sklearn.metrics import accuracy_score
 from tqdm import tqdm
 
 from model.SwinIR import SwinIR
@@ -44,7 +45,7 @@ def stage1_handler(swin_model, image, device='cpu'):
 
 
 def main(args):
-
+    
     # config 
     cfg = OmegaConf.load(args.config)
 
@@ -82,6 +83,11 @@ def main(args):
         writer.writerow(['P1', 'P2', 'Final Probability', 'Label'])
 
     
+
+    # Lists to store actual and predicted labels
+    all_preds = []
+    all_labels = []
+
     for data, label in tqdm(test_loader):
 
         # SwinIR
@@ -90,7 +96,6 @@ def main(args):
 
         smoothed_data_features = median_filter_4d(data_features)
        
-        print(smoothed_data_features.shape)
 
 
         p1 = cosine_similarity(data_features, smoothed_data_features)
@@ -101,7 +106,6 @@ def main(args):
             output = resnet_model(data)
             p2 = output.squeeze()
 
-        print(p2)
         
 
         
@@ -113,8 +117,20 @@ def main(args):
             writer = csv.writer(file)
             for i in range(len(data)):
                 writer.writerow([p1[i].item(), p2[i].item(), final_prob[i].item(), label[i].item()])
+
+
+        preds = (output >= 0.5).int()
+        
+        # Append to lists
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(label.cpu().numpy())
+
     
     print(f'Results written to {result_path}')
+
+    # Calculate accuracy
+    accuracy = accuracy_score(all_labels, all_preds)
+    print(f'Accuracy: {accuracy * 100:.2f}%')
 
 
 

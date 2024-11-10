@@ -1,5 +1,5 @@
 import importlib
-from typing import Mapping, Any, Dict, Callable, Tuple
+from typing import Mapping, Any, Dict, Callable, Tuple, Optional
 import torch
 from scipy.ndimage import median_filter
 import torch.nn.functional as F
@@ -9,9 +9,80 @@ import torch.nn as nn
 import math
 from einops import repeat
 from inspect import isfunction
+import warnings
+from urllib.parse import urlparse
+from urllib.request import urlopen, Request
+import tempfile
+import uuid
+import errno
+import hashlib
+import sys
+import shutil
+from torch import Tensor
 
 
 
+
+
+
+_hub_dir = None
+ENV_TORCH_HOME = 'TORCH_HOME'
+ENV_XDG_CACHE_HOME = 'XDG_CACHE_HOME'
+DEFAULT_CACHE_DIR = '~/.cache'
+
+class _Faketqdm:  # type: ignore[no-redef]
+
+    def __init__(self, total=None, disable=False,
+                 unit=None, *args, **kwargs):
+        self.total = total
+        self.disable = disable
+        self.n = 0
+        # Ignore all extra *args and **kwargs lest you want to reinvent tqdm
+
+    def update(self, n):
+        if self.disable:
+            return
+
+        self.n += n
+        if self.total is None:
+            sys.stderr.write(f"\r{self.n:.1f} bytes")
+        else:
+            sys.stderr.write(f"\r{100 * self.n / float(self.total):.1f}%")
+        sys.stderr.flush()
+
+    # Don't bother implementing; use real tqdm if you want
+    def set_description(self, *args, **kwargs):
+        pass
+
+    def write(self, s):
+        sys.stderr.write(f"{s}\n")
+
+    def close(self):
+        self.disable = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.disable:
+            return
+
+        sys.stderr.write('\n')
+
+try:
+    from tqdm import tqdm  # If tqdm is installed use it, otherwise use the fake wrapper
+except ImportError:
+    tqdm = _Faketqdm
+
+__all__ = [
+    'download_url_to_file',
+    'get_dir',
+    'help',
+    'list',
+    'load',
+    'load_state_dict_from_url',
+    'set_dir',
+]
 
 def cosine_similarity(tensor1, tensor2):
     """
@@ -37,6 +108,32 @@ def cosine_similarity(tensor1, tensor2):
     similarity = F.cosine_similarity(tensor1_flat, tensor2_flat, dim=1)
     
     return similarity
+
+
+def euclidean_distance(tensor1, tensor2):
+    """
+    Calculate Euclidean distance between two batches of images.
+    
+    Args:
+        tensor1 (torch.Tensor): A tensor of shape [batch_size, channels, height, width].
+        tensor2 (torch.Tensor): A tensor of shape [batch_size, channels, height, width].
+
+    Returns:
+        torch.Tensor: A tensor of shape [batch_size], containing the Euclidean distance
+                      between corresponding images in tensor1 and tensor2.
+    """
+    # Ensure the two tensors have the same shape
+    assert tensor1.shape == tensor2.shape, "Input tensors must have the same shape"
+    
+    # Flatten each image in the batch to a 1D vector
+    batch_size = tensor1.shape[0]
+    tensor1_flat = tensor1.reshape(batch_size, -1)  # Shape: [batch_size, channels * height * width]
+    tensor2_flat = tensor2.reshape(batch_size, -1)  # Shape: [batch_size, channels * height * width]
+    
+    # Calculate Euclidean distance between corresponding images in the two batches
+    distance = torch.norm(tensor1_flat - tensor2_flat, p=2, dim=1)
+    
+    return distance
 
 
 
@@ -83,6 +180,149 @@ def load_model_from_checkpoint(checkpoint_path: str) -> Dict[str, torch.Tensor]:
 
     return sd
 
+
+
+def _get_torch_home():
+    torch_home = os.path.expanduser(
+        os.getenv(ENV_TORCH_HOME,
+                  os.path.join(os.getenv(ENV_XDG_CACHE_HOME,
+                                         DEFAULT_CACHE_DIR), 'torch')))
+    return torch_home
+
+
+
+def get_dir():
+    r"""
+    Get the Torch Hub cache directory used for storing downloaded models & weights.
+
+    If :func:`~torch.hub.set_dir` is not called, default path is ``$TORCH_HOME/hub`` where
+    environment variable ``$TORCH_HOME`` defaults to ``$XDG_CACHE_HOME/torch``.
+    ``$XDG_CACHE_HOME`` follows the X Design Group specification of the Linux
+    filesystem layout, with a default value ``~/.cache`` if the environment
+    variable is not set.
+    """
+    # Issue warning to move data if old env is set
+    if os.getenv('TORCH_HUB'):
+        warnings.warn('TORCH_HUB is deprecated, please use env TORCH_HOME instead')
+
+    if _hub_dir is not None:
+        return _hub_dir
+    return os.path.join(_get_torch_home(), 'hub')
+
+
+def download_url_to_file(url: str, dst: str, hash_prefix: Optional[str] = None,
+                         progress: bool = True) -> None:
+    r"""Download object at the given URL to a local path.
+
+    Args:
+        url (str): URL of the object to download
+        dst (str): Full path where object will be saved, e.g. ``/tmp/temporary_file``
+        hash_prefix (str, optional): If not None, the SHA256 downloaded file should start with ``hash_prefix``.
+            Default: None
+        progress (bool, optional): whether or not to display a progress bar to stderr
+            Default: True
+
+    Example:
+        >>> # xdoctest: +REQUIRES(env:TORCH_DOCTEST_HUB)
+        >>> # xdoctest: +REQUIRES(POSIX)
+        >>> torch.hub.download_url_to_file('https://s3.amazonaws.com/pytorch/models/resnet18-5c106cde.pth', '/tmp/temporary_file')
+
+    """
+    file_size = None
+    req = Request(url, headers={"User-Agent": "torch.hub"})
+    u = urlopen(req)
+    meta = u.info()
+    if hasattr(meta, 'getheaders'):
+        content_length = meta.getheaders("Content-Length")
+    else:
+        content_length = meta.get_all("Content-Length")
+    if content_length is not None and len(content_length) > 0:
+        file_size = int(content_length[0])
+
+    # We deliberately save it in a temp file and move it after
+    # download is complete. This prevents a local working checkpoint
+    # being overridden by a broken download.
+    # We deliberately do not use NamedTemporaryFile to avoid restrictive
+    # file permissions being applied to the downloaded file.
+    dst = os.path.expanduser(dst)
+    for seq in range(tempfile.TMP_MAX):
+        tmp_dst = dst + '.' + uuid.uuid4().hex + '.partial'
+        try:
+            f = open(tmp_dst, 'w+b')
+        except FileExistsError:
+            continue
+        break
+    else:
+        raise FileExistsError(errno.EEXIST, 'No usable temporary file name found')
+
+    try:
+        if hash_prefix is not None:
+            sha256 = hashlib.sha256()
+        with tqdm(total=file_size, disable=not progress,
+                  unit='B', unit_scale=True, unit_divisor=1024) as pbar:
+            while True:
+                buffer = u.read(8192)
+                if len(buffer) == 0:
+                    break
+                f.write(buffer)
+                if hash_prefix is not None:
+                    sha256.update(buffer)
+                pbar.update(len(buffer))
+
+        f.close()
+        if hash_prefix is not None:
+            digest = sha256.hexdigest()
+            if digest[:len(hash_prefix)] != hash_prefix:
+                raise RuntimeError(f'invalid hash value (expected "{hash_prefix}", got "{digest}")')
+        shutil.move(f.name, dst)
+    finally:
+        f.close()
+        if os.path.exists(f.name):
+            os.remove(f.name)
+
+
+# https://github.com/XPixelGroup/BasicSR/blob/master/basicsr/utils/download_util.py/
+def load_file_from_url(url, model_dir=None, progress=True, file_name=None):
+    """Load file form http url, will download models if necessary.
+
+    Ref:https://github.com/1adrianb/face-alignment/blob/master/face_alignment/utils.py
+
+    Args:
+        url (str): URL to be downloaded.
+        model_dir (str): The path to save the downloaded model. Should be a full path. If None, use pytorch hub_dir.
+            Default: None.
+        progress (bool): Whether to show the download progress. Default: True.
+        file_name (str): The downloaded file name. If None, use the file name in the url. Default: None.
+
+    Returns:
+        str: The path to the downloaded file.
+    """
+    if model_dir is None:  # use the pytorch hub_dir
+        hub_dir = get_dir()
+        model_dir = os.path.join(hub_dir, 'checkpoints')
+
+    os.makedirs(model_dir, exist_ok=True)
+
+    parts = urlparse(url)
+    filename = os.path.basename(parts.path)
+    if file_name is not None:
+        filename = file_name
+    cached_file = os.path.abspath(os.path.join(model_dir, filename))
+    if not os.path.exists(cached_file):
+        print(f'Downloading: "{url}" to {cached_file}\n')
+        download_url_to_file(url, cached_file, hash_prefix=None, progress=progress)
+    return cached_file
+
+
+
+def load_model_from_url(url: str) -> Dict[str, torch.Tensor]:
+    sd_path = load_file_from_url(url, model_dir="weights")
+    sd = torch.load(sd_path, map_location="cpu")
+    if "state_dict" in sd:
+        sd = sd["state_dict"]
+    if list(sd.keys())[0].startswith("module"):
+        sd = {k[len("module."):]: v for k, v in sd.items()}
+    return sd
 
 def get_obj_from_str(string: str, reload: bool=False) -> Any:
     module, cls = string.rsplit(".", 1)
@@ -296,5 +536,148 @@ def normalization(channels):
     :return: an nn.Module for normalization.
     """
     return GroupNorm32(32, channels)
+
+
+def wavelet_blur(image: Tensor, radius: int):
+    """
+    Apply wavelet blur to the input tensor.
+    """
+    # input shape: (1, 3, H, W)
+    # convolution kernel
+    kernel_vals = [
+        [0.0625, 0.125, 0.0625],
+        [0.125, 0.25, 0.125],
+        [0.0625, 0.125, 0.0625],
+    ]
+    kernel = torch.tensor(kernel_vals, dtype=image.dtype, device=image.device)
+    # add channel dimensions to the kernel to make it a 4D tensor
+    kernel = kernel[None, None]
+    # repeat the kernel across all input channels
+    kernel = kernel.repeat(3, 1, 1, 1)
+    image = F.pad(image, (radius, radius, radius, radius), mode='replicate')
+    # apply convolution
+    output = F.conv2d(image, kernel, groups=3, dilation=radius)
+    return output
+
+
+def wavelet_decomposition(image: Tensor, levels=5):
+    """
+    Apply wavelet decomposition to the input tensor.
+    This function only returns the low frequency & the high frequency.
+    """
+    high_freq = torch.zeros_like(image)
+    for i in range(levels):
+        radius = 2 ** i
+        low_freq = wavelet_blur(image, radius)
+        high_freq += (image - low_freq)
+        image = low_freq
+
+    return high_freq, low_freq
+
+
+def sliding_windows(h: int, w: int, tile_size: int, tile_stride: int) -> Tuple[int, int, int, int]:
+    hi_list = list(range(0, h - tile_size + 1, tile_stride))
+    if (h - tile_size) % tile_stride != 0:
+        hi_list.append(h - tile_size)
+    
+    wi_list = list(range(0, w - tile_size + 1, tile_stride))
+    if (w - tile_size) % tile_stride != 0:
+        wi_list.append(w - tile_size)
+    
+    coords = []
+    for hi in hi_list:
+        for wi in wi_list:
+            coords.append((hi, hi + tile_size, wi, wi + tile_size))
+    return coords
+
+
+# https://github.com/csslc/CCSR/blob/main/model/q_sampler.py#L503
+def gaussian_weights(tile_width: int, tile_height: int) -> np.ndarray:
+    """Generates a gaussian mask of weights for tile contributions"""
+    latent_width = tile_width
+    latent_height = tile_height
+    var = 0.01
+    midpoint = (latent_width - 1) / 2  # -1 because index goes from 0 to latent_width - 1
+    x_probs = [
+        np.exp(-(x - midpoint) * (x - midpoint) / (latent_width * latent_width) / (2 * var)) / np.sqrt(2 * np.pi * var)
+        for x in range(latent_width)]
+    midpoint = latent_height / 2
+    y_probs = [
+        np.exp(-(y - midpoint) * (y - midpoint) / (latent_height * latent_height) / (2 * var)) / np.sqrt(2 * np.pi * var)
+        for y in range(latent_height)]
+    weights = np.outer(y_probs, x_probs)
+    return weights
+
+
+def wavelet_reconstruction(content_feat:Tensor, style_feat:Tensor):
+    """
+    Apply wavelet decomposition, so that the content will have the same color as the style.
+    """
+    # calculate the wavelet decomposition of the content feature
+    content_high_freq, content_low_freq = wavelet_decomposition(content_feat)
+    del content_low_freq
+    # calculate the wavelet decomposition of the style feature
+    style_high_freq, style_low_freq = wavelet_decomposition(style_feat)
+    del style_high_freq
+    # reconstruct the content feature with the style's high frequency
+    return content_high_freq + style_low_freq
+
+
+# Function to calculate noise levels based on user input
+def calculate_noise_levels(num_timesteps, num_levels):
+    step = num_timesteps // num_levels
+    noise_levels = [step * (i + 1) for i in range(num_levels)]
+    return noise_levels
+
+
+
+def calculate_psnr(img1, img2, max_pixel_value=1.0):
+    mse = F.mse_loss(img1, img2, reduction='mean')
+    if mse == 0:
+        return float('inf')
+    psnr = 20 * torch.log10(max_pixel_value / torch.sqrt(mse))
+    return psnr
+
+def batch_psnr(batch1, batch2, max_pixel_value=1.0):
+    """
+    Calculate PSNR between two batches of images one by one.
+
+    Args:
+        batch1 (torch.Tensor): A tensor of shape (batch_size, channels, height, width).
+        batch2 (torch.Tensor): A tensor of shape (batch_size, channels, height, width).
+        max_pixel_value (float): The maximum possible pixel value of the images. Default is 1.0 (normalized images).
+
+    Returns:
+        list: A list containing PSNR values for each pair of images in the batches.
+    """
+    # Ensure the input tensors have the same shape
+    assert batch1.shape == batch2.shape, "Input batches must have the same shape."
+
+    psnr_values = []
+    batch_size = batch1.shape[0]
+
+    for i in range(batch_size):
+        img1 = batch1[i]
+        img2 = batch2[i]
+        psnr = calculate_psnr(img1, img2, max_pixel_value)
+        psnr_values.append(psnr.item())
+    
+    return psnr_values
+
+
+def calculate_similarity_metrics(batch1: Tensor, batch2: Tensor, metric_list: Dict) -> Dict:
+    
+    # Ensure both batches are of the same size
+    assert batch1.shape == batch2.shape, "Input batches must have the same shape"
+
+    result = {}
+    for metric_name, metric_fn in metric_list.items():
+        if metric_name in ["PSNR", "SSIM", "LPIPS"]:
+
+            for img1, img2 in zip(batch1, batch2):
+                res = []
+                res.append(metric_fn(img1, img2).item())
+                result[metric_name] = res
+        
 
 
