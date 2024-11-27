@@ -19,7 +19,6 @@ import hashlib
 import sys
 import shutil
 from torch import Tensor
-import pyiqa
 from PIL import Image
 
 
@@ -675,3 +674,14 @@ def save(img, out_dir, img_name):
 
 
 
+def save(img, out_dir, img_name):   
+
+    img = img.squeeze(axis=0)   
+    save_path = os.path.join(out_dir, img_name)
+    Image.fromarray(img.cpu().numpy()).save(save_path)
+
+
+def normalize(tensor):
+    min_val = tensor.min()
+    max_val = tensor.max()
+    return (tensor - min_val) / (max_val - min_val + 1e-8)

@@ -9,7 +9,7 @@ import numpy as np
 from accelerate.utils import set_seed
 import os
 import csv
-
+import pyiqa
 
 
 
@@ -20,9 +20,11 @@ from utils import (pad_to_multiples_of
                    , wavelet_decomposition
                    , wavelet_reconstruction
                    , calculate_noise_levels
-                   )
+                   , save
+                   , normalize)
 
 from Similarity import psnr
+
 
 from model.SwinIR import SwinIR
 from model.cldm import ControlLDM
@@ -44,7 +46,7 @@ MODELS = {
 
 def run_stage1(swin_model, image, device):
     # image to tensor
-    image = torch.tensor((image / 255.).clip(0, 1), dtype=torch.float32, device=device)
+    # image = torch.tensor((image / 255.).clip(0, 1), dtype=torch.float32, device=device)
     pad_image = pad_to_multiples_of(image, multiple=64)
     # run
     output, features = swin_model(pad_image)
@@ -70,6 +72,7 @@ def run_stage2(
     noise_levels: list
 ) -> torch.Tensor:
     
+
     ### preprocess
     bs, _, ori_h, ori_w = clean.shape
     
@@ -77,7 +80,8 @@ def run_stage2(
     # pad: ensure that height & width are multiples of 64
     pad_clean = pad_to_multiples_of(clean, multiple=64)
     h, w = pad_clean.shape[2:]
-    
+      
+
     
     # prepare conditon
     if not tiled:
@@ -95,22 +99,26 @@ def run_stage2(
         # reverse sampling, which can prevent our model from generating noise in 
         # image background.
         _, low_freq = wavelet_decomposition(pad_clean)
+
         if not tiled:
             x_0 = cldm.vae_encode(low_freq)
         else:
             x_0 = cldm.vae_encode_tiled(low_freq, tile_size, tile_stride)
         
-        # x_T = diffusion.q_sample(
-        #     x_0,
-        #     torch.full((bs, ), diffusion.num_timesteps - 1, dtype=torch.long, device=device),
-        #     torch.randn(x_0.shape, dtype=torch.float32, device=device)
-        # )
+
+
+        #x_T = diffusion.q_sample(
+        #    x_0,
+        #    torch.full((bs, ), diffusion.num_timesteps - 1, dtype=torch.long, device=device),
+        #    torch.randn(x_0.shape, dtype=torch.float32, device=device)
+        #)
+
 
         # add noise
         x_T_s = add_diffusion_noise(x_0 = x_0
-                                            , diffusion = diffusion
-                                            , noise_levels = noise_levels
-                                            , device = device) # [X_T1 , X_T2 ,...]
+                                           , diffusion = diffusion
+                                           , noise_levels = noise_levels
+                                           , device = device) # [X_T1 , X_T2 ,...]
 
 
     else:
@@ -118,23 +126,33 @@ def run_stage2(
     
     ### run sampler
     sampler = SpacedSampler(diffusion.betas)
+   
 
     clean_samples = []
 
     for x_T in x_T_s:
-        z = sampler.sample(
-            model=cldm, device=device, steps=steps, batch_size=bs, x_size=(4, h // 8, w // 8),
-            cond=cond, uncond=uncond, cfg_scale=cfg_scale, x_T=x_T, progress=True,
-            progress_leave=True, cond_fn=cond_fn, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride
-        )
-        if not tiled:
-            x = cldm.vae_decode(z)
-        else:
-            x = cldm.vae_decode_tiled(z, tile_size // 8, tile_stride // 8)
-        ### postprocess
-        cldm.control_scales = old_control_scales
-        sample = x[:, :, :ori_h, :ori_w]
-        clean_samples.append(sample)
+
+       z = sampler.sample(
+           model=cldm, device=device, steps=steps, batch_size=bs, x_size=(4, h // 8, w // 8),
+           cond=cond, uncond=uncond, cfg_scale=cfg_scale, x_T=x_T, progress=True,
+           progress_leave=True, cond_fn=cond_fn, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride
+       )
+
+
+       if not tiled:
+           x = cldm.vae_decode(z)
+       else:
+           x = cldm.vae_decode_tiled(z, tile_size // 8, tile_stride // 8)
+
+
+       ### postprocess
+       cldm.control_scales = old_control_scales
+       sample = x[:, :, :ori_h, :ori_w]
+
+
+       clean_samples.append(sample)
+
+
     return clean_samples
 
 # Function to add noise at different levels using diffusion process
@@ -162,24 +180,24 @@ def main(args):
     print("[INFO] Load SwinIR...")
 
     swinir: SwinIR = instantiate_from_config(cfg.model.swinir)
-    # sd = load_model_from_checkpoint(cfg.test.swin_check_dir)
-    # swinir.load_state_dict(sd, strict=True)
+    sd = load_model_from_checkpoint(cfg.test.swin_check_dir)
+    swinir.load_state_dict(sd, strict=True)
     swinir.eval().to(device)
 
 
     # Initialize Stage 2
     print("[INFO] Load ControlLDM...")
     cldm: ControlLDM = instantiate_from_config(cfg.model.cldm)
-    # # sd = load_model_from_url(MODELS["sd_v21"])
-    # sd = load_model_from_checkpoint(cfg.test.diffusion_check_dir)
-    # unused = cldm.load_pretrained_sd(sd)
-    # print(f"[INFO] strictly load pretrained sd_v2.1, unused weights: {unused}")
+    # sd = load_model_from_url(MODELS["sd_v21"])
+    sd = load_model_from_checkpoint(cfg.test.diffusion_check_dir)
+    unused = cldm.load_pretrained_sd(sd)
+    print(f"[INFO] strictly load pretrained sd_v2.1, unused weights: {unused}")
 
     ### load controlnet
     print("[INFO] Load ControlNet...")
-    # # control_sd = load_model_from_url(MODELS["v2"])
-    # control_sd = load_model_from_checkpoint(cfg.test.controlnet_check_dir)
-    # cldm.load_controlnet_from_ckpt(control_sd)
+    # control_sd = load_model_from_url(MODELS["v2"])
+    control_sd = load_model_from_checkpoint(cfg.test.controlnet_check_dir)
+    cldm.load_controlnet_from_ckpt(control_sd)
     print(f"[INFO] strictly load controlnet weight")
     cldm.eval().to(device)
 
@@ -227,33 +245,59 @@ def main(args):
     
 
 
+    # Setup Similarity Metrics
+    psnr_metric = pyiqa.create_metric('psnr')
+
+
+
+
     # Setup result path
     result_path = os.path.join(cfg.test.test_result_dir, 'results.csv')
 
     with open(result_path, mode='w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(['Method_1', 'PSNR', 'Label'])
+        writer.writerow(['real_res', 'real_PSNR', 'syn_res', 'syn_PSNR'])
 
 
-    for data, label in tqdm(test_loader):
+    for batch_idx, (real, syn) in enumerate(tqdm(test_loader)):
 
         # Stage 1
-        data = torch.tensor((data / 255.).clip(0, 1), dtype=torch.float32, device=device)
+        real, syn = real.to(device), syn.to(device)
+        # data = torch.tensor((data / 255.).clip(0, 1), dtype=torch.float32, device=device)
         # data = rearrange(data, "n h w c -> n c h w").contiguous()
 
         # set pipeline output size
-        h, w = data.shape[2:]
+        h, w = real.shape[2:]
         final_size = (h, w)
-        clean, _ = run_stage1(swin_model=swinir, image=data, device=device)
-
 
         # OOD Detection: Method 1
-        with torch.no_grad():  
-            output = resnet_model(data)
-            pred_method1 = (output > 0.5).int()
+        with torch.no_grad():
+            real_output = resnet_model(real).squeeze()
+            real_output = (real_output > 0.5).int()
 
-        samples = run_stage2(
-            clean = clean,
+            syn_output = resnet_model(syn).squeeze()
+            syn_output = (syn_output > 0.5).int()
+        
+
+
+        torch.cuda.empty_cache()
+
+        # real = torch.tensor((real / 255.).clip(0, 1), dtype=torch.float32, device=device)
+        # syn = torch.tensor((syn / 255.).clip(0, 1), dtype=torch.float32, device=device)
+
+       
+
+        with torch.no_grad():
+            real_clean, _ = run_stage1(swin_model=swinir, image=real, device=device)
+            syn_clean, _ = run_stage1(swin_model=swinir, image=syn, device=device)
+
+
+        torch.cuda.empty_cache()
+
+        with torch.no_grad():
+
+            real_samples = run_stage2(
+            clean = real_clean,
             cldm = cldm,
             cond_fn = cond_fn,
             diffusion = diffusion,
@@ -267,32 +311,110 @@ def main(args):
             cfg_scale = args.cfg_scale,
             better_start = args.better_start,
             device = device,
-            noise_levels = noise_levels
-        )
+            noise_levels = noise_levels)
 
-        batch_similarities = []
-        for sample in samples:
+
+            syn_samples = run_stage2(
+            clean = syn_clean,
+            cldm = cldm,
+            cond_fn = cond_fn,
+            diffusion = diffusion,
+            steps = args.steps,
+            strength = 1.0,
+            tiled = args.tiled,
+            tile_size = args.tile_size,
+            tile_stride = args.tile_stride,
+            pos_prompt = args.pos_prompt,
+            neg_prompt = args.neg_prompt,
+            cfg_scale = args.cfg_scale,
+            better_start = args.better_start,
+            device = device,
+            noise_levels = noise_levels)
+
+
+        torch.cuda.empty_cache()
+
+        batch_real_similarities = []
+        batch_syn_similarities = []
+
+        for sample_idx, (real_sample, syn_sample) in enumerate(zip(real_samples, syn_samples)):
+
+
             # colorfix (borrowed from StableSR, thanks for their work)
-            sample = (sample + 1) / 2
-            sample = wavelet_reconstruction(sample, clean)
+            #real_sample = (real_sample + 1) / 2
+            #syn_sample = (syn_sample + 1) / 2
+          
+            real_sample = normalize(real_sample)
+            syn_sample = normalize(syn_sample)
+
+
+            real_sample = wavelet_reconstruction(real_sample, real_clean)
+            syn_sample = wavelet_reconstruction(syn_sample, syn_clean)
+
+
+
+            real_sample = normalize(real_sample)
+            syn_sample = normalize(syn_sample)
+
+            n_real_clean = normalize(real_clean)
+            n_syn_clean = normalize(syn_clean)
+
 
             # resize to desired output size
-            sample = F.interpolate(sample, size=final_size, mode="bicubic", antialias=True)
-            
-            # tensor to image
-            # sample = rearrange(sample * 255., "n c h w -> n h w c")
-            sample = sample.contiguous().clamp(0, 255).to(torch.uint8).cpu().numpy()
+            #real_sample = F.interpolate(real_sample, size=final_size, mode="bicubic", antialias=True)
+            #syn_sample = F.interpolate(syn_sample, size=final_size, mode="bicubic", antialias=True)
+
+
+            #real_sample = rearrange(real_sample * 255., "n c h w -> n h w c")
+            #syn_sample = rearrange(syn_sample * 255., "n c h w -> n h w c")
+            #n_real_clean = rearrange(n_real_clean * 255., "n c h w -> n h w c")
+            #n_syn_clean = rearrange(n_syn_clean * 255., "n c h w -> n h w c")
+            #n_syn = rearrange(syn * 255., "n c h w -> n h w c")
+
+
+
+            #real_sample = real_sample.contiguous().clamp(0, 255).to(torch.uint8).cpu()
+            #syn_sample = syn_sample.contiguous().clamp(0, 255).to(torch.uint8).cpu()
+            #n_real_clean = n_real_clean.contiguous().clamp(0, 255).to(torch.uint8).cpu()
+            #n_syn_clean = n_syn_clean.contiguous().clamp(0, 255).to(torch.uint8).cpu()
+            #n_syn = n_syn.contiguous().clamp(0, 255).to(torch.uint8).cpu()
+
 
             # Calculate PSNR
-            batch_similarities.append(batch_psnr(sample, clean))
+            # real_sample =  rearrange(real_sample/255.0, "n h w c -> n c h w").contiguous()
+            # n_real_clean =  rearrange(n_real_clean/255.0, "n h w c -> n c h w").contiguous()
+            # syn_sample =  rearrange(syn_sample/255.0, "n h w c -> n c h w").contiguous()
+            # n_syn_clean =  rearrange(n_syn_clean/255.0, "n h w c -> n c h w").contiguous()
 
-        batch_similarities = np.mean(np.array(batch_similarities), axis=0).tolist()
+            batch_real_similarities.append(psnr(real_sample, real_clean, psnr_metric))
+            batch_syn_similarities.append(psnr(syn_sample, syn_clean, psnr_metric))
+
+            # save image
+            real_hq_name = os.path.join(f'real_hq_{batch_idx}_{sample_idx}.png')
+            syn_hq_name = os.path.join(f'syn_hq_{batch_idx}_{sample_idx}.png')
+            real_clean_name = os.path.join(f'real_clean_{batch_idx}_{sample_idx}.png')
+            syn_clean_name = os.path.join(f'syn_clean_{batch_idx}_{sample_idx}.png')
+            syn_lq_name = os.path.join(f'syn_lq_{batch_idx}_{sample_idx}.png')
+           
+            
+            #save(real_sample, cfg.test.test_result_dir, real_hq_name)
+            #save(syn_sample, cfg.test.test_result_dir, syn_hq_name)
+            #save(n_real_clean, cfg.test.test_result_dir, real_clean_name)
+            #save(n_syn_clean, cfg.test.test_result_dir, syn_clean_name)
+            #save(n_syn, cfg.test.test_result_dir, syn_lq_name)
+ 
+
+
+        batch_real_similarities = np.mean(np.array(batch_real_similarities), axis=0).tolist()
+        batch_syn_similarities = np.mean(np.array(batch_syn_similarities), axis=0).tolist()
+        
+      
 
         # Write results to CSV file
         with open(result_path, mode='a', newline='') as file:
             writer = csv.writer(file)
-            for i in range(len(data)):
-                writer.writerow([pred_method1[i].item(), batch_similarities[i].item(), label[i].item()])
+            for i in range(len(real)):
+                writer.writerow([real_output[i].item(), batch_real_similarities[i], syn_output[i].item(), batch_syn_similarities[i]])
 
     
 

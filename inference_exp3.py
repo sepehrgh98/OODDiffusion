@@ -19,7 +19,8 @@ from utils import (pad_to_multiples_of
                    , load_model_from_url
                    , wavelet_decomposition
                    , wavelet_reconstruction
-                   , calculate_noise_levels)
+                   , calculate_noise_levels
+                   , normalize)
 
 
 from Similarity import (psnr
@@ -225,6 +226,17 @@ def main(args):
                     , num_levels = args.num_levels)
 
 
+    # Setup Similarity Metrics
+    psnr_metric = pyiqa.create_metric('psnr')
+    ssim_metric = pyiqa.create_metric('ssim')
+    lpips_metric = pyiqa.create_metric('lpips')
+    brisque_metric = pyiqa.create_metric('brisque')
+    nima_metric = pyiqa.create_metric('nima')
+    niqe_metric = pyiqa.create_metric('niqe')
+    musiq_metric = pyiqa.create_metric('musiq')
+
+
+
     # Setup result path
     result_path = os.path.join(cfg.test.test_result_dir, 'results.csv')
 
@@ -245,7 +257,6 @@ def main(args):
             real, syn = real.to(device) / 255.0, syn.to(device) / 255.0
             real, syn = real.clip(0, 1).float(), syn.clip(0, 1).float()
 
-
             
             real = torch.tensor((real / 255.).clip(0, 1), dtype=torch.float32, device=device)
             syn = torch.tensor((syn / 255.).clip(0, 1), dtype=torch.float32, device=device)
@@ -254,11 +265,8 @@ def main(args):
                 real_clean, _ = run_stage1(swin_model=swinir, image=real, device=device)
                 syn_clean, _ = run_stage1(swin_model=swinir, image=syn, device=device)
 
-
             torch.cuda.empty_cache()
-
-
-
+    
             with torch.no_grad():
 
                 real_samples = run_stage2(
@@ -298,42 +306,52 @@ def main(args):
 
 
             torch.cuda.empty_cache()
-
-            
+  
+   
             for idx, (real_sample, syn_sample) in enumerate(zip(real_samples, syn_samples)):
 
                 # colorfix (borrowed from StableSR, thanks for their work)
-                real_sample = (real_sample + 1) / 2
-                syn_sample = (syn_sample + 1) / 2
+                # real_sample = (real_sample + 1) / 2
+                # syn_sample = (syn_sample + 1) / 2
 
+                real_sample = normalize(real_sample)
+                syn_sample = normalize(syn_sample)
 
                 real_sample = wavelet_reconstruction(real_sample, real_clean)
                 syn_sample = wavelet_reconstruction(syn_sample, syn_clean)
 
 
-                real_sample = real_sample.contiguous().clamp(0, 255).to(torch.uint8).cpu().numpy()
-                syn_sample = syn_sample.contiguous().clamp(0, 255).to(torch.uint8).cpu().numpy()
+                real_sample = normalize(real_sample)
+                syn_sample = normalize(syn_sample)
+
+
+
+                n_real_clean = normalize(real_clean)
+                n_syn_clean = normalize(syn_clean)
+           
+                # real_sample = real_sample.contiguous().clamp(0, 1).to(torch.float32)
+                # syn_sample = syn_sample.contiguous().clamp(0, 1).to(torch.float32)
 
 
                 # Image Quality Metrics Calculation
                 real_metrics = {
-                    "psnr": psnr(real_sample, real_clean.cpu().numpy()),
-                    "ssim": ssim(real_sample, real_clean.cpu().numpy()),
-                    "lpips": lpips(real_sample, real_clean.cpu().numpy()),
-                    "brisque": brisque(real_sample),
-                    "musiq": musiq(real_sample),
-                    "nima": nima(real_sample),
-                    "niqe": niqe(real_sample),
+                    "psnr": psnr(real_sample, n_real_clean, psnr_metric),
+                    "ssim": ssim(real_sample, n_real_clean, ssim_metric),
+                    "lpips": lpips(real_sample, n_real_clean, lpips_metric),
+                    "brisque": brisque(real_sample, brisque_metric),
+                    "musiq": musiq(real_sample, musiq_metric),
+                    "nima": nima(real_sample, nima_metric),
+                    "niqe": niqe(real_sample, niqe_metric),
                 }
 
                 syn_metrics = {
-                    "psnr": psnr(syn_sample, syn_clean.cpu().numpy()),
-                    "ssim": ssim(syn_sample, syn_clean.cpu().numpy()),
-                    "lpips": lpips(syn_sample, syn_clean.cpu().numpy()),
-                    "brisque": brisque(syn_sample),
-                    "musiq": musiq(syn_sample),
-                    "nima": nima(syn_sample),
-                    "niqe": niqe(syn_sample),
+                    "psnr": psnr(syn_sample, n_syn_clean, psnr_metric),
+                    "ssim": ssim(syn_sample, n_syn_clean, ssim_metric),
+                    "lpips": lpips(syn_sample, n_syn_clean, lpips_metric),
+                    "brisque": brisque(syn_sample, brisque_metric),
+                    "musiq": musiq(syn_sample, musiq_metric),
+                    "nima": nima(syn_sample, nima_metric),
+                    "niqe": niqe(syn_sample, niqe_metric),
                 }
 
                 # Writing results to CSV
@@ -346,12 +364,6 @@ def main(args):
                     ]
                     writer.writerow(row) 
                 
-
-
-
-
-
-
 
     
 
@@ -421,3 +433,4 @@ if __name__ == "__main__":
     set_seed(args.seed)
     main(args)
     print("done!")
+

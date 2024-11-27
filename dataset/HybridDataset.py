@@ -221,19 +221,20 @@ class HybridDataset(Dataset):
         # else:
         #     image = self.final_images[index]
 
-        real, syn, gt = self.final_image_pack[index]
 
+        real, syn, gt = self.final_image_pack[index]
 
         # Preprocess image
         real = self._preprocess_image(np.array(real))
         syn = self._preprocess_image(np.array(syn))
+
         gt = self._preprocess_image(np.array(gt))
 
         # # Get label
         # label = self.final_labels[index]
         # return image, label
-        return real, syn, gt
 
+        return real, syn, gt
 
     def _apply_degradations(self, img_gt):
         """

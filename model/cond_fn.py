@@ -56,7 +56,16 @@ class WeightedMSEGuidance(Guidance):
 
     def _get_weight(self, target: torch.Tensor) -> torch.Tensor:
         # convert RGB to G
-        rgb_to_gray_kernel = torch.tensor([0.2989, 0.5870, 0.1140]).view(1, 3, 1, 1)
+        n_channel = target.shape[1]
+
+
+        if n_channel == 4:
+            rgb_to_gray_kernel = torch.tensor([0.2989, 0.5870, 0.1140, 0.0]).view(1, n_channel, 1, 1)
+        elif n_channel == 3:
+            rgb_to_gray_kernel = torch.tensor([0.2989, 0.5870, 0.1140]).view(1, n_channel, 1, 1)
+        else:
+            raise ValueError(f"Unexpected number of channels: {n_channel}")
+        # rgb_to_gray_kernel = torch.tensor([0.2989, 0.5870, 0.1140]).view(1, n_channel, 1, 1)
         target = torch.sum(target * rgb_to_gray_kernel.to(target.device), dim=1, keepdim=True)
         # initialize sobel kernel in x and y axis
         G_x = [

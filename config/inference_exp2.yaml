@@ -112,10 +112,11 @@ dataset:
 
     
 test:
-  batch_size: 4
+  batch_size: 2
   num_workers: 0
   swin_check_dir: ./weights/SwinIR/0010000.pt
   diffusion_check_dir: ./weights/Diffusion/v2-1_512-ema-pruned.ckpt
   res_check_dir: ./weights/ResNet/epoch_30.pt
-  controlnet_check_dir: ./weights/ControlNet/v2.pth
-  test_result_dir: ./results/stage2/Task1
+  controlnet_check_dir: ./weights/ControlNet/0010000.pt
+  test_result_dir: ./results/stage2/Task3 
+  save_image: False
