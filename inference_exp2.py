@@ -20,7 +20,9 @@ from utils import (pad_to_multiples_of
                    , wavelet_decomposition
                    , wavelet_reconstruction
                    , calculate_noise_levels
-                   , batch_psnr)
+                   )
+
+from Similarity import psnr
 
 from model.SwinIR import SwinIR
 from model.cldm import ControlLDM
@@ -40,7 +42,7 @@ MODELS = {
 
  
 
-def run_stage1(swin_model, image, device='cpu'):
+def run_stage1(swin_model, image, device):
     # image to tensor
     image = torch.tensor((image / 255.).clip(0, 1), dtype=torch.float32, device=device)
     pad_image = pad_to_multiples_of(image, multiple=64)
@@ -222,6 +224,7 @@ def main(args):
     noise_levels = calculate_noise_levels(
                     num_timesteps = diffusion.num_timesteps
                     , num_levels = args.num_levels)
+    
 
 
     # Setup result path
@@ -241,7 +244,7 @@ def main(args):
         # set pipeline output size
         h, w = data.shape[2:]
         final_size = (h, w)
-        clean, _ = run_stage1(swin_model=swinir, image=data)
+        clean, _ = run_stage1(swin_model=swinir, image=data, device=device)
 
 
         # OOD Detection: Method 1
@@ -277,7 +280,7 @@ def main(args):
             sample = F.interpolate(sample, size=final_size, mode="bicubic", antialias=True)
             
             # tensor to image
-            sample = rearrange(sample * 255., "n c h w -> n h w c")
+            # sample = rearrange(sample * 255., "n c h w -> n h w c")
             sample = sample.contiguous().clamp(0, 255).to(torch.uint8).cpu().numpy()
 
             # Calculate PSNR

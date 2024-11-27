@@ -19,6 +19,8 @@ import hashlib
 import sys
 import shutil
 from torch import Tensor
+import pyiqa
+from PIL import Image
 
 
 
@@ -665,19 +667,11 @@ def batch_psnr(batch1, batch2, max_pixel_value=1.0):
     return psnr_values
 
 
-def calculate_similarity_metrics(batch1: Tensor, batch2: Tensor, metric_list: Dict) -> Dict:
-    
-    # Ensure both batches are of the same size
-    assert batch1.shape == batch2.shape, "Input batches must have the same shape"
+def save(img, out_dir, img_name):
+    save_path = os.path.join(out_dir, img_name)
+    Image.fromarray(img).save(save_path)
 
-    result = {}
-    for metric_name, metric_fn in metric_list.items():
-        if metric_name in ["PSNR", "SSIM", "LPIPS"]:
 
-            for img1, img2 in zip(batch1, batch2):
-                res = []
-                res.append(metric_fn(img1, img2).item())
-                result[metric_name] = res
-        
+
 
 

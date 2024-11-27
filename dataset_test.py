@@ -45,7 +45,7 @@ def save_preprocessed_image(tensor, save_path):
 
 def test_hybrid_dataset():
 
-    data_dir = "./test_dataset"  # Update this with your dataset directory
+    data_dir = "./data/test"  # Update this with your dataset directory
 
     out_size = 224
     crop_type = "center"
@@ -77,22 +77,85 @@ def test_hybrid_dataset():
     batch_size = 4
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2)
 
+    
+    real_save_path = "./real.png"
+    syn_save_path = "./syn.png"
+    gt_save_path = "./qt.png"
+
     # Iterate through a few batches of data to test
-    for batch_idx, (images, labels) in enumerate(dataloader):
+    for batch_idx, (r, s, g) in enumerate(dataloader):
         print(f"Batch {batch_idx + 1}")
-        print(f"Images shape: {images.shape}")
-        print(f"Labels: {labels}")
-
+  
         # Visualize a few images
-        for i in range(images.size(0)):
-            img = images[i].permute(1, 2, 0).numpy()  # Convert tensor to numpy format for plotting
-            img = (img * 0.229 + 0.485)  # De-normalize (Note: adapt based on your normalization)
-            img = img.clip(0, 1)  # Clip values to [0, 1] for visualization
+        for i in range(r.size(0)):
 
-            plt.imshow(img)
-            plt.title(f"Label: {labels[i].item()}")
-            plt.axis("off")
-            plt.show()
+
+            real = r[i].detach().squeeze() 
+            syn = s[i].detach().squeeze() 
+            gt = g[i].detach().squeeze() 
+
+
+            real = real.permute(1, 2, 0) 
+            syn = syn.permute(1, 2, 0) 
+            gt = gt.permute(1, 2, 0) 
+
+
+
+
+
+            # if real.dtype == torch.float32:
+            real = (real * 255).clamp(0, 255).byte()
+
+            # if syn.dtype == torch.float32:
+            syn = (syn * 255).clamp(0, 255).byte()
+
+
+            # if gt.dtype == torch.float32:
+            gt = (gt * 255).clamp(0, 255).byte()
+
+
+
+            real = real.numpy()
+            syn = syn.numpy()
+            gt = gt.numpy()
+
+
+
+            Image.fromarray(real).save(real_save_path)
+            Image.fromarray(syn).save(syn_save_path)
+            Image.fromarray(gt).save(gt_save_path)
+            break
+            # real_img = real[i].permute(1, 2, 0).numpy()  # Convert tensor to numpy format for plotting
+            # real_img = (real_img * 0.229 + 0.485)  # De-normalize (Note: adapt based on your normalization)
+            # real_img = real_img.clip(0, 1)  # Clip values to [0, 1] for visualization
+
+            # syn_img = syn[i].permute(1, 2, 0).numpy()  # Convert tensor to numpy format for plotting
+            # syn_img = (syn_img * 0.229 + 0.485)  # De-normalize (Note: adapt based on your normalization)
+            # syn_img = syn_img.clip(0, 1)  # Clip values to [0, 1] for visualization
+
+            # gt_img = gt[i].permute(1, 2, 0).numpy()  # Convert tensor to numpy format for plotting
+            # gt_img = (gt_img * 0.229 + 0.485)  # De-normalize (Note: adapt based on your normalization)
+            # gt_img = gt_img.clip(0, 1)  # Clip values to [0, 1] for visualization
+
+            # fig, axes = plt.subplots(1, 3, figsize=(15, 5))  # 1 row, 3 columns
+
+            # axes[0].imshow(real_img)
+            # axes[0].set_title('Image 1')
+            # axes[0].axis('off')  # Hide axis labels for cleaner visualization
+
+            # axes[1].imshow(syn_img)
+            # axes[1].set_title('Image 2')
+            # axes[1].axis('off')
+
+            # axes[2].imshow(gt_img)
+            # axes[2].set_title('Image 3')
+            # axes[2].axis('off')
+
+            # # Adjust spacing to prevent overlap
+            # plt.tight_layout()
+
+            # # Show the figure
+            # plt.show()
 
         # Exit after visualizing the first batch (optional)
         if batch_idx == 0:

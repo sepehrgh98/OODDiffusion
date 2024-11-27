@@ -68,7 +68,8 @@ class HybridDataset(Dataset):
         self.image_pairs = self._load_image_pairs()
 
         # Generate the final dataset with either LQ or Synthetic, but not both
-        self.final_images, self.final_labels = self._select_images()
+        # self.final_images, self.final_labels = self._select_images()
+        self.final_image_pack = self._select_images()
         print("[INFO] HybridDataset initialization complete.\n")
 
     def _check_dir(self):
@@ -132,49 +133,57 @@ class HybridDataset(Dataset):
         """
         Generate synthetic images from HQ images and select either LQ or Syn images.
         """
-        final_images = []
-        final_labels = []
+        final_image_pack = []
+        # final_syn_images = []
+        # final_labels = []
 
         print("[INFO] Generating synthetic images and selecting final dataset...")
         for idx, (lq_path, hq_path) in enumerate(self.image_pairs):
             # Load HQ image to generate synthetic image
             hq_image = Image.open(hq_path).convert("RGB")
+            lq_image = Image.open(lq_path).convert("RGB")
             
             hq_image = self._clip(hq_image)
+            lq_image = self._clip(lq_image)
 
 
             # Shape: (h, w, c); channel order: BGR; image range: [0, 1], float32.
             hq_image = (hq_image[..., ::-1] / 255.0).astype(np.float32)
+            lq_image = (lq_image[..., ::-1] / 255.0).astype(np.float32)
 
 
             # Apply degradations to create a synthetic version
             synthetic_image = self._apply_degradations(hq_image)
 
-            # Randomly select either LQ or synthetic image
-            if random.choice([True, False]):
-                # Select LQ image
-                final_images.append(lq_path)
-                final_labels.append(0)  # Label for Real
-            else:
-                # Select synthetic image (store as numpy array)
-                final_images.append(synthetic_image)
-                final_labels.append(1)  # Label for Synthetic
+            final_image_pack.append((lq_image, synthetic_image, hq_image))
 
-        # Ensure equal number of LQ and synthetic images
-        lq_count = sum(1 for label in final_labels if label == 0)
-        syn_count = len(final_labels) - lq_count
+            # # Randomly select either LQ or synthetic image
+            # if random.choice([True, False]):
+            #     # Select LQ image
+            #     final_images.append(lq_path)
+            #     final_labels.append(0)  # Label for Real
+            # else:
+            #     # Select synthetic image (store as numpy array)
+            #     final_images.append(synthetic_image)
+            #     final_labels.append(1)  # Label for Synthetic
 
-        print(f"[INFO] Number of Real images selected: {lq_count}")
-        print(f"[INFO] Number of Synthetic images selected: {syn_count}")
+        # # Ensure equal number of LQ and synthetic images
+        # lq_count = sum(1 for label in final_labels if label == 0)
+        # syn_count = len(final_labels) - lq_count
 
-        if lq_count > syn_count:
-            excess = lq_count - syn_count
-            self._balance_dataset(final_images, final_labels, excess, 0)
-        elif syn_count > lq_count:
-            excess = syn_count - lq_count
-            self._balance_dataset(final_images, final_labels, excess, 1)
+        # print(f"[INFO] Number of Real images selected: {lq_count}")
+        # print(f"[INFO] Number of Synthetic images selected: {syn_count}")
 
-        return final_images, final_labels
+        # if lq_count > syn_count:
+        #     excess = lq_count - syn_count
+        #     self._balance_dataset(final_images, final_labels, excess, 0)
+        # elif syn_count > lq_count:
+        #     excess = syn_count - lq_count
+        #     self._balance_dataset(final_images, final_labels, excess, 1)
+
+        # return final_images, final_labels
+
+        return final_image_pack
     
     
     def _clip(self, img):
@@ -205,20 +214,25 @@ class HybridDataset(Dataset):
 
 
     def __getitem__(self, index):
-        # Load LQ or synthetic image based on final selection
-        if isinstance(self.final_images[index], str):
-            img_path = self.final_images[index]
-            image = Image.open(img_path).convert("RGB")
-        else:
-            image = self.final_images[index]
+        # # Load LQ or synthetic image based on final selection
+        # if isinstance(self.final_images[index], str):
+        #     img_path = self.final_images[index]
+        #     image = Image.open(img_path).convert("RGB")
+        # else:
+        #     image = self.final_images[index]
+
+        real, syn, gt = self.final_image_pack[index]
 
 
         # Preprocess image
-        image = self._preprocess_image(np.array(image))
+        real = self._preprocess_image(np.array(real))
+        syn = self._preprocess_image(np.array(syn))
+        gt = self._preprocess_image(np.array(gt))
 
-        # Get label
-        label = self.final_labels[index]
-        return image, label
+        # # Get label
+        # label = self.final_labels[index]
+        # return image, label
+        return real, syn, gt
 
 
     def _apply_degradations(self, img_gt):
@@ -272,4 +286,24 @@ class HybridDataset(Dataset):
         return image
 
     def __len__(self):
-        return len(self.final_images)
+        return len(self.final_image_pack)
+
+
+class HybridDataset_non_observe(HybridDataset):
+    def __getitem__(self, index):
+
+        real, syn = self.final_images[index]
+
+        # Randomly select either LQ or synthetic image
+        if random.choice([True, False]):
+            # Select real image
+            final_image = real
+            label = 0  # Label for Real
+        else:
+            # Select synthetic image (store as numpy array)
+            final_image = syn
+            label = 1  # Label for Syn
+
+
+        return final_image, label
+

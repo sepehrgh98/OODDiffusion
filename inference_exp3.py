@@ -19,8 +19,16 @@ from utils import (pad_to_multiples_of
                    , load_model_from_url
                    , wavelet_decomposition
                    , wavelet_reconstruction
-                   , calculate_noise_levels
-                   , batch_psnr)
+                   , calculate_noise_levels)
+
+
+from Similarity import (psnr
+                        ,ssim
+                        ,brisque
+                        ,musiq
+                        ,nima
+                        ,niqe
+                        ,lpips)
 
 from model.SwinIR import SwinIR
 from model.cldm import ControlLDM
@@ -40,7 +48,7 @@ MODELS = {
 
  
 
-def run_stage1(swin_model, image, device='cpu'):
+def run_stage1(swin_model, image, device):
     # image to tensor
     image = torch.tensor((image / 255.).clip(0, 1), dtype=torch.float32, device=device)
     pad_image = pad_to_multiples_of(image, multiple=64)
@@ -160,24 +168,24 @@ def main(args):
     print("[INFO] Load SwinIR...")
 
     swinir: SwinIR = instantiate_from_config(cfg.model.swinir)
-    # sd = load_model_from_checkpoint(cfg.test.swin_check_dir)
-    # swinir.load_state_dict(sd, strict=True)
+    sd = load_model_from_checkpoint(cfg.test.swin_check_dir)
+    swinir.load_state_dict(sd, strict=True)
     swinir.eval().to(device)
 
 
     # Initialize Stage 2
     print("[INFO] Load ControlLDM...")
     cldm: ControlLDM = instantiate_from_config(cfg.model.cldm)
-    # # sd = load_model_from_url(MODELS["sd_v21"])
-    # sd = load_model_from_checkpoint(cfg.test.diffusion_check_dir)
-    # unused = cldm.load_pretrained_sd(sd)
-    # print(f"[INFO] strictly load pretrained sd_v2.1, unused weights: {unused}")
+    # sd = load_model_from_url(MODELS["sd_v21"])
+    sd = load_model_from_checkpoint(cfg.test.diffusion_check_dir)
+    unused = cldm.load_pretrained_sd(sd)
+    print(f"[INFO] strictly load pretrained sd_v2.1, unused weights: {unused}")
 
     ### load controlnet
     print("[INFO] Load ControlNet...")
-    # # control_sd = load_model_from_url(MODELS["v2"])
-    # control_sd = load_model_from_checkpoint(cfg.test.controlnet_check_dir)
-    # cldm.load_controlnet_from_ckpt(control_sd)
+    # control_sd = load_model_from_url(MODELS["v2"])
+    control_sd = load_model_from_checkpoint(cfg.test.controlnet_check_dir)
+    cldm.load_controlnet_from_ckpt(control_sd)
     print(f"[INFO] strictly load controlnet weight")
     cldm.eval().to(device)
 
@@ -202,13 +210,6 @@ def main(args):
         )
 
 
-#    # Initialize ResNet
-#     print("[INFO] Load ResNet...")
-#     resnet_model = instantiate_from_config(cfg.model.resnet)
-#     rd = load_model_from_checkpoint(cfg.test.res_check_dir)
-#     resnet_model.load_state_dict(rd, strict=True)
-#     resnet_model.eval().to(device)
-
     # Setup data
     print("[INFO] Setup Dataset...")
     dataset: HybridDataset = instantiate_from_config(cfg.dataset)
@@ -227,40 +228,128 @@ def main(args):
     # Setup result path
     result_path = os.path.join(cfg.test.test_result_dir, 'results.csv')
 
+    header = [
+        "Image_Type", "Image_Index", "PSNR", "SSIM", "LPIPS",
+        "BRISQUE", "MUSIQ", "NIMA", "NIQE"
+    ]
+
+    # Open CSV file in write mode and write the header
     with open(result_path, mode='w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(['Method_1', 'PSNR', 'Label'])
+        writer.writerow(header)  # Write the header
 
 
-    for data, label in tqdm(test_loader):
+        for real, syn in tqdm(test_loader):
 
-        # Stage 1
-        data = torch.tensor((data / 255.).clip(0, 1), dtype=torch.float32, device=device)
-        # data = rearrange(data, "n h w c -> n c h w").contiguous()
-
-        # set pipeline output size
-        h, w = data.shape[2:]
-        final_size = (h, w)
-        clean, _ = run_stage1(swin_model=swinir, image=data)
+            # Stage 1
+            real, syn = real.to(device) / 255.0, syn.to(device) / 255.0
+            real, syn = real.clip(0, 1).float(), syn.clip(0, 1).float()
 
 
-        samples = run_stage2(
-            clean = clean,
-            cldm = cldm,
-            cond_fn = cond_fn,
-            diffusion = diffusion,
-            steps = args.steps,
-            strength = 1.0,
-            tiled = args.tiled,
-            tile_size = args.tile_size,
-            tile_stride = args.tile_stride,
-            pos_prompt = args.pos_prompt,
-            neg_prompt = args.neg_prompt,
-            cfg_scale = args.cfg_scale,
-            better_start = args.better_start,
-            device = device,
-            noise_levels = noise_levels
-        )
+            
+            real = torch.tensor((real / 255.).clip(0, 1), dtype=torch.float32, device=device)
+            syn = torch.tensor((syn / 255.).clip(0, 1), dtype=torch.float32, device=device)
+
+            with torch.no_grad():
+                real_clean, _ = run_stage1(swin_model=swinir, image=real, device=device)
+                syn_clean, _ = run_stage1(swin_model=swinir, image=syn, device=device)
+
+
+            torch.cuda.empty_cache()
+
+
+
+            with torch.no_grad():
+
+                real_samples = run_stage2(
+                clean = real_clean,
+                cldm = cldm,
+                cond_fn = cond_fn,
+                diffusion = diffusion,
+                steps = args.steps,
+                strength = 1.0,
+                tiled = args.tiled,
+                tile_size = args.tile_size,
+                tile_stride = args.tile_stride,
+                pos_prompt = args.pos_prompt,
+                neg_prompt = args.neg_prompt,
+                cfg_scale = args.cfg_scale,
+                better_start = args.better_start,
+                device = device,
+                noise_levels = noise_levels)
+
+
+                syn_samples = run_stage2(
+                clean = syn_clean,
+                cldm = cldm,
+                cond_fn = cond_fn,
+                diffusion = diffusion,
+                steps = args.steps,
+                strength = 1.0,
+                tiled = args.tiled,
+                tile_size = args.tile_size,
+                tile_stride = args.tile_stride,
+                pos_prompt = args.pos_prompt,
+                neg_prompt = args.neg_prompt,
+                cfg_scale = args.cfg_scale,
+                better_start = args.better_start,
+                device = device,
+                noise_levels = noise_levels)
+
+
+            torch.cuda.empty_cache()
+
+            
+            for idx, (real_sample, syn_sample) in enumerate(zip(real_samples, syn_samples)):
+
+                # colorfix (borrowed from StableSR, thanks for their work)
+                real_sample = (real_sample + 1) / 2
+                syn_sample = (syn_sample + 1) / 2
+
+
+                real_sample = wavelet_reconstruction(real_sample, real_clean)
+                syn_sample = wavelet_reconstruction(syn_sample, syn_clean)
+
+
+                real_sample = real_sample.contiguous().clamp(0, 255).to(torch.uint8).cpu().numpy()
+                syn_sample = syn_sample.contiguous().clamp(0, 255).to(torch.uint8).cpu().numpy()
+
+
+                # Image Quality Metrics Calculation
+                real_metrics = {
+                    "psnr": psnr(real_sample, real_clean.cpu().numpy()),
+                    "ssim": ssim(real_sample, real_clean.cpu().numpy()),
+                    "lpips": lpips(real_sample, real_clean.cpu().numpy()),
+                    "brisque": brisque(real_sample),
+                    "musiq": musiq(real_sample),
+                    "nima": nima(real_sample),
+                    "niqe": niqe(real_sample),
+                }
+
+                syn_metrics = {
+                    "psnr": psnr(syn_sample, syn_clean.cpu().numpy()),
+                    "ssim": ssim(syn_sample, syn_clean.cpu().numpy()),
+                    "lpips": lpips(syn_sample, syn_clean.cpu().numpy()),
+                    "brisque": brisque(syn_sample),
+                    "musiq": musiq(syn_sample),
+                    "nima": nima(syn_sample),
+                    "niqe": niqe(syn_sample),
+                }
+
+                # Writing results to CSV
+                for image_type, metrics in zip(["Real", "Syn"], [real_metrics, syn_metrics]):
+                    row = [
+                        image_type, idx,  # Image_Type and Image_Index
+                        metrics["psnr"], metrics["ssim"], metrics["lpips"],
+                        metrics["brisque"], metrics["musiq"], metrics["nima"],
+                        metrics["niqe"]
+                    ]
+                    writer.writerow(row) 
+                
+
+
+
+
 
 
 
