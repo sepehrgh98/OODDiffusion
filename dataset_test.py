@@ -3,7 +3,7 @@ import torchvision.transforms as transforms
 from PIL import Image
 import torch
 from torch.utils.data import DataLoader
-from dataset.HybridDataset import HybridDataset
+from dataset.HybridDataset import HybridDataset, ISP_HybridDataset
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
@@ -45,7 +45,7 @@ def save_preprocessed_image(tensor, save_path):
 
 def test_hybrid_dataset():
 
-    data_dir = "./data/test"  # Update this with your dataset directory
+    data_dir = "./data/image_test"  # Update this with your dataset directory
 
     out_size = 224
     crop_type = "center"
@@ -59,7 +59,7 @@ def test_hybrid_dataset():
     valid_extensions = [".png", ".jpg", ".jpeg"]
 
     # Instantiate the HybridDataset
-    dataset = HybridDataset(
+    dataset = ISP_HybridDataset(
         data_dir=data_dir,
         out_size=out_size,
         crop_type=crop_type,

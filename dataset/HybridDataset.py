@@ -8,6 +8,17 @@ from PIL import Image
 import numpy as np
 import cv2
 from torchvision import transforms
+import torch
+
+
+from dataset.ISP import (
+    shot_and_read_noise,
+    mosaic,
+    white_balance,
+    color_correction,
+    gamma_expansion,
+    inverse_smoothstep
+)
 
 
 from dataset.utils import center_crop_arr, random_crop_arr
@@ -157,32 +168,6 @@ class HybridDataset(Dataset):
 
             final_image_pack.append((lq_image, synthetic_image, hq_image))
 
-            # # Randomly select either LQ or synthetic image
-            # if random.choice([True, False]):
-            #     # Select LQ image
-            #     final_images.append(lq_path)
-            #     final_labels.append(0)  # Label for Real
-            # else:
-            #     # Select synthetic image (store as numpy array)
-            #     final_images.append(synthetic_image)
-            #     final_labels.append(1)  # Label for Synthetic
-
-        # # Ensure equal number of LQ and synthetic images
-        # lq_count = sum(1 for label in final_labels if label == 0)
-        # syn_count = len(final_labels) - lq_count
-
-        # print(f"[INFO] Number of Real images selected: {lq_count}")
-        # print(f"[INFO] Number of Synthetic images selected: {syn_count}")
-
-        # if lq_count > syn_count:
-        #     excess = lq_count - syn_count
-        #     self._balance_dataset(final_images, final_labels, excess, 0)
-        # elif syn_count > lq_count:
-        #     excess = syn_count - lq_count
-        #     self._balance_dataset(final_images, final_labels, excess, 1)
-
-        # return final_images, final_labels
-
         return final_image_pack
     
     
@@ -214,13 +199,6 @@ class HybridDataset(Dataset):
 
 
     def __getitem__(self, index):
-        # # Load LQ or synthetic image based on final selection
-        # if isinstance(self.final_images[index], str):
-        #     img_path = self.final_images[index]
-        #     image = Image.open(img_path).convert("RGB")
-        # else:
-        #     image = self.final_images[index]
-
 
         real, syn, gt = self.final_image_pack[index]
 
@@ -230,9 +208,7 @@ class HybridDataset(Dataset):
 
         gt = self._preprocess_image(np.array(gt))
 
-        # # Get label
-        # label = self.final_labels[index]
-        # return image, label
+
 
         return real, syn, gt
 
@@ -307,4 +283,35 @@ class HybridDataset_non_observe(HybridDataset):
 
 
         return final_image, label
+    
+
+
+class ISP_HybridDataset(HybridDataset):
+    def _apply_degradations(self, img_gt):
+
+        ISP = {"shot_read_noise": shot_and_read_noise
+               , "mosaic": mosaic
+               , "white_balance": white_balance
+               , "gamma_expansion": gamma_expansion
+               , "color_correction": color_correction
+               , "inverse_ton_mapping": inverse_smoothstep}
+        
+
+        h, w, _ = img_gt.shape
+        img_lq = img_gt.copy()
+        
+        img_lq = torch.from_numpy(img_lq).permute(2, 0, 1).to(torch.float32) 
+
+        isp_meth = ISP[random.choice(list(ISP.keys()))]
+
+        img_lq = isp_meth(img_lq)
+
+        img_lq = img_lq.permute(1, 2, 0)
+
+        # Resize back to original size
+        # img_lq = cv2.resize(img_lq, (w, h), interpolation=cv2.INTER_LINEAR)
+
+        return img_lq
+
+
 
