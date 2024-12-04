@@ -238,134 +238,174 @@ def main(args):
 
 
     # Setup result path
-    result_path = os.path.join(cfg.test.test_result_dir, 'results.csv')
+    result_syn_path = os.path.join(cfg.test.test_result_dir, 'results-3-syn.csv')
+    result_real_path = os.path.join(cfg.test.test_result_dir, 'results-3-real.csv')
 
     header = [
-        "Image_Type", "Image_Index", "PSNR", "SSIM", "LPIPS",
+        "Image_Index", "Noise_level", "PSNR", "SSIM", "LPIPS",
         "BRISQUE", "MUSIQ", "NIMA", "NIQE"
     ]
 
     # Open CSV file in write mode and write the header
-    with open(result_path, mode='w', newline='') as file:
+    with open(result_real_path, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(header)  # Write the header
+
+    # Open CSV file in write mode and write the header
+    with open(result_syn_path, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(header)  # Write the header
 
 
-        for real, syn in tqdm(test_loader):
+    for batch_idx, (real, syn, _) in enumerate(tqdm(test_loader)):
 
-            # Stage 1
-            real, syn = real.to(device) / 255.0, syn.to(device) / 255.0
-            real, syn = real.clip(0, 1).float(), syn.clip(0, 1).float()
+        # Stage 1
+        real, syn = real.to(device), syn.to(device)
+        # real, syn = real.to(device) / 255.0, syn.to(device) / 255.0
+        # real, syn = real.clip(0, 1).float(), syn.clip(0, 1).float()
 
-            
-            real = torch.tensor((real / 255.).clip(0, 1), dtype=torch.float32, device=device)
-            syn = torch.tensor((syn / 255.).clip(0, 1), dtype=torch.float32, device=device)
+        
+        # real = torch.tensor((real / 255.).clip(0, 1), dtype=torch.float32, device=device)
+        # syn = torch.tensor((syn / 255.).clip(0, 1), dtype=torch.float32, device=device)
 
-            with torch.no_grad():
-                real_clean, _ = run_stage1(swin_model=swinir, image=real, device=device)
-                syn_clean, _ = run_stage1(swin_model=swinir, image=syn, device=device)
+        # set pipeline output size
+        h, w = real.shape[2:]
+        final_size = (h, w)
 
-            torch.cuda.empty_cache()
-    
-            with torch.no_grad():
-
-                real_samples = run_stage2(
-                clean = real_clean,
-                cldm = cldm,
-                cond_fn = cond_fn,
-                diffusion = diffusion,
-                steps = args.steps,
-                strength = 1.0,
-                tiled = args.tiled,
-                tile_size = args.tile_size,
-                tile_stride = args.tile_stride,
-                pos_prompt = args.pos_prompt,
-                neg_prompt = args.neg_prompt,
-                cfg_scale = args.cfg_scale,
-                better_start = args.better_start,
-                device = device,
-                noise_levels = noise_levels)
-
-
-                syn_samples = run_stage2(
-                clean = syn_clean,
-                cldm = cldm,
-                cond_fn = cond_fn,
-                diffusion = diffusion,
-                steps = args.steps,
-                strength = 1.0,
-                tiled = args.tiled,
-                tile_size = args.tile_size,
-                tile_stride = args.tile_stride,
-                pos_prompt = args.pos_prompt,
-                neg_prompt = args.neg_prompt,
-                cfg_scale = args.cfg_scale,
-                better_start = args.better_start,
-                device = device,
-                noise_levels = noise_levels)
-
-
-            torch.cuda.empty_cache()
-  
-   
-            for idx, (real_sample, syn_sample) in enumerate(zip(real_samples, syn_samples)):
-
-                # colorfix (borrowed from StableSR, thanks for their work)
-                # real_sample = (real_sample + 1) / 2
-                # syn_sample = (syn_sample + 1) / 2
-
-                real_sample = normalize(real_sample)
-                syn_sample = normalize(syn_sample)
-
-                real_sample = wavelet_reconstruction(real_sample, real_clean)
-                syn_sample = wavelet_reconstruction(syn_sample, syn_clean)
-
-
-                real_sample = normalize(real_sample)
-                syn_sample = normalize(syn_sample)
+        
 
 
 
-                n_real_clean = normalize(real_clean)
-                n_syn_clean = normalize(syn_clean)
-           
-                # real_sample = real_sample.contiguous().clamp(0, 1).to(torch.float32)
-                # syn_sample = syn_sample.contiguous().clamp(0, 1).to(torch.float32)
+        with torch.no_grad():
+            real_clean, _ = run_stage1(swin_model=swinir, image=real, device=device)
+            syn_clean, _ = run_stage1(swin_model=swinir, image=syn, device=device)
 
 
-                # Image Quality Metrics Calculation
-                real_metrics = {
-                    "psnr": psnr(real_sample, n_real_clean, psnr_metric),
-                    "ssim": ssim(real_sample, n_real_clean, ssim_metric),
-                    "lpips": lpips(real_sample, n_real_clean, lpips_metric),
-                    "brisque": brisque(real_sample, brisque_metric),
-                    "musiq": musiq(real_sample, musiq_metric),
-                    "nima": nima(real_sample, nima_metric),
-                    "niqe": niqe(real_sample, niqe_metric),
-                }
+        torch.cuda.empty_cache()
 
-                syn_metrics = {
-                    "psnr": psnr(syn_sample, n_syn_clean, psnr_metric),
-                    "ssim": ssim(syn_sample, n_syn_clean, ssim_metric),
-                    "lpips": lpips(syn_sample, n_syn_clean, lpips_metric),
-                    "brisque": brisque(syn_sample, brisque_metric),
-                    "musiq": musiq(syn_sample, musiq_metric),
-                    "nima": nima(syn_sample, nima_metric),
-                    "niqe": niqe(syn_sample, niqe_metric),
-                }
+        with torch.no_grad():
 
-                # Writing results to CSV
-                for image_type, metrics in zip(["Real", "Syn"], [real_metrics, syn_metrics]):
-                    row = [
-                        image_type, idx,  # Image_Type and Image_Index
-                        metrics["psnr"], metrics["ssim"], metrics["lpips"],
-                        metrics["brisque"], metrics["musiq"], metrics["nima"],
-                        metrics["niqe"]
+            real_samples = run_stage2(
+            clean = real_clean,
+            cldm = cldm,
+            cond_fn = cond_fn,
+            diffusion = diffusion,
+            steps = args.steps,
+            strength = 1.0,
+            tiled = args.tiled,
+            tile_size = args.tile_size,
+            tile_stride = args.tile_stride,
+            pos_prompt = args.pos_prompt,
+            neg_prompt = args.neg_prompt,
+            cfg_scale = args.cfg_scale,
+            better_start = args.better_start,
+            device = device,
+            noise_levels = noise_levels)
+
+
+            syn_samples = run_stage2(
+            clean = syn_clean,
+            cldm = cldm,
+            cond_fn = cond_fn,
+            diffusion = diffusion,
+            steps = args.steps,
+            strength = 1.0,
+            tiled = args.tiled,
+            tile_size = args.tile_size,
+            tile_stride = args.tile_stride,
+            pos_prompt = args.pos_prompt,
+            neg_prompt = args.neg_prompt,
+            cfg_scale = args.cfg_scale,
+            better_start = args.better_start,
+            device = device,
+            noise_levels = noise_levels)
+
+
+        torch.cuda.empty_cache()
+        similarity_vals = []
+        for idx, (real_sample, syn_sample) in enumerate(zip(real_samples, syn_samples)):
+
+            # colorfix (borrowed from StableSR, thanks for their work)
+            # real_sample = (real_sample + 1) / 2
+            # syn_sample = (syn_sample + 1) / 2
+
+            real_sample = normalize(real_sample)
+            syn_sample = normalize(syn_sample)
+
+            real_sample = wavelet_reconstruction(real_sample, real_clean)
+            syn_sample = wavelet_reconstruction(syn_sample, syn_clean)
+
+
+            real_sample = normalize(real_sample)
+            syn_sample = normalize(syn_sample)
+
+
+
+            n_real_clean = normalize(real_clean)
+            n_syn_clean = normalize(syn_clean)
+        
+            # real_sample = real_sample.contiguous().clamp(0, 1).to(torch.float32)
+            # syn_sample = syn_sample.contiguous().clamp(0, 1).to(torch.float32)
+
+
+            # Image Quality Metrics Calculation
+            real_metrics = {
+                "psnr": psnr(real_sample,n_real_clean, psnr_metric),
+                "ssim": ssim(real_sample, n_real_clean, ssim_metric),
+                "lpips": lpips(real_sample, n_real_clean, lpips_metric),
+                "brisque": brisque(real_sample, brisque_metric),
+                "musiq": musiq(real_sample, musiq_metric),
+                "nima": nima(real_sample, nima_metric),
+                "niqe": niqe(real_sample, niqe_metric),
+            }
+
+            syn_metrics = {
+                "psnr": psnr(syn_sample, n_syn_clean, psnr_metric),
+                "ssim": ssim(syn_sample, n_syn_clean, ssim_metric),
+                "lpips": lpips(syn_sample, n_syn_clean, lpips_metric),
+                "brisque": brisque(syn_sample, brisque_metric),
+                "musiq": musiq(syn_sample, musiq_metric),
+                "nima": nima(syn_sample, nima_metric),
+                "niqe": niqe(syn_sample, niqe_metric),
+            }
+            similarity_vals.append((real_metrics, syn_metrics))
+
+            # # Writing results to CSV
+            # for image_type, metrics in zip(["Real", "Syn"], [real_metrics, syn_metrics]):
+            #     row = [
+            #         image_type, idx,  # Image_Type and Image_Index
+            #         metrics["psnr"], metrics["ssim"], metrics["lpips"],
+            #         metrics["brisque"], metrics["musiq"], metrics["nima"],
+            #         metrics["niqe"]
+            #     ]
+            #     writer.writerow(row) 
+
+        with open(result_real_path, mode='a', newline='') as real_file, open(result_syn_path, mode='a', newline='') as syn_file:
+            real_writer = csv.writer(real_file)
+            syn_writer = csv.writer(syn_file)
+
+            for i in range(len(real)):
+                for noise_level, (real_metrics, syn_metrics) in zip(['high', 'mid', 'low'] ,similarity_vals):
+                    img_idx = batch_idx + i
+                    real_row = [img_idx,
+                        noise_level,  
+                        real_metrics["psnr"][i].item(), real_metrics["ssim"][i].item(), real_metrics["lpips"][i].item(),
+                        real_metrics["brisque"][i].item(), real_metrics["musiq"][i].item(), real_metrics["nima"][i].item(),
+                        real_metrics["niqe"][i].item()
                     ]
-                    writer.writerow(row) 
+                    real_writer.writerow(real_row)
+
+                    syn_row = [img_idx,
+                        noise_level,  
+                        syn_metrics["psnr"][i].item(), syn_metrics["ssim"][i].item(), syn_metrics["lpips"][i].item(),
+                        syn_metrics["brisque"][i].item(), syn_metrics["musiq"][i].item(), syn_metrics["nima"][i].item(),
+                        syn_metrics["niqe"][i].item()
+                    ]
+                    syn_writer.writerow(syn_row)
+
                 
 
-    
+
 
 
 def check_device(device: str) -> str:

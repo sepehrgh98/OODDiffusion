@@ -21,7 +21,9 @@ from utils import (pad_to_multiples_of
                    , wavelet_reconstruction
                    , calculate_noise_levels
                    , save
-                   , normalize)
+                   , normalize
+                   , median_filter_4d
+                   , cosine_similarity)
 
 from Similarity import psnr
 
@@ -31,7 +33,7 @@ from model.cldm import ControlLDM
 from model.gaussian_diffusion import Diffusion
 from model.cond_fn import MSEGuidance, WeightedMSEGuidance
 from model.sampler import SpacedSampler
-from dataset.HybridDataset import HybridDataset
+from dataset.HybridDataset import HybridDataset, ISP_HybridDataset
 
 
 MODELS = {
@@ -232,6 +234,7 @@ def main(args):
     # Setup data
     print("[INFO] Setup Dataset...")
     dataset: HybridDataset = instantiate_from_config(cfg.dataset)
+    # dataset: ISP_HybridDataset = instantiate_from_config(cfg.dataset)
     test_loader = DataLoader(
     dataset=dataset, batch_size=cfg.test.batch_size,
     num_workers=cfg.test.num_workers,
@@ -252,14 +255,14 @@ def main(args):
 
 
     # Setup result path
-    result_path = os.path.join(cfg.test.test_result_dir, 'results.csv')
+    result_path = os.path.join(cfg.test.test_result_dir, 'DRealSR_results_vaghei.csv')
 
     with open(result_path, mode='w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(['real_res', 'real_PSNR', 'syn_res', 'syn_PSNR'])
+        writer.writerow(['real_res', 'real_method1', 'real_PSNR','syn_res', 'syn_method1', 'syn_PSNR'])
 
 
-    for batch_idx, (real, syn) in enumerate(tqdm(test_loader)):
+    for batch_idx, (real, syn, _) in enumerate(tqdm(test_loader)):
 
         # Stage 1
         real, syn = real.to(device), syn.to(device)
@@ -273,10 +276,10 @@ def main(args):
         # OOD Detection: Method 1
         with torch.no_grad():
             real_output = resnet_model(real).squeeze()
-            real_output = (real_output > 0.5).int()
+            # real_output = (real_output > 0.5).int()
 
             syn_output = resnet_model(syn).squeeze()
-            syn_output = (syn_output > 0.5).int()
+            # syn_output = (syn_output > 0.5).int()
         
 
 
@@ -288,9 +291,14 @@ def main(args):
        
 
         with torch.no_grad():
-            real_clean, _ = run_stage1(swin_model=swinir, image=real, device=device)
-            syn_clean, _ = run_stage1(swin_model=swinir, image=syn, device=device)
+            real_clean, real_clean_ft = run_stage1(swin_model=swinir, image=real, device=device)
+            syn_clean, syn_clean_ft = run_stage1(swin_model=swinir, image=syn, device=device)
+            
+            real_sim  = cosine_similarity(real_clean_ft, median_filter_4d(real_clean_ft))
+            syn_sim  = cosine_similarity(syn_clean_ft, median_filter_4d(syn_clean_ft))
 
+            real_final_prob = real_sim / real_output
+            syn_final_prob = syn_sim / syn_output
 
         torch.cuda.empty_cache()
 
@@ -390,11 +398,11 @@ def main(args):
             batch_syn_similarities.append(psnr(syn_sample, syn_clean, psnr_metric))
 
             # save image
-            real_hq_name = os.path.join(f'real_hq_{batch_idx}_{sample_idx}.png')
-            syn_hq_name = os.path.join(f'syn_hq_{batch_idx}_{sample_idx}.png')
-            real_clean_name = os.path.join(f'real_clean_{batch_idx}_{sample_idx}.png')
-            syn_clean_name = os.path.join(f'syn_clean_{batch_idx}_{sample_idx}.png')
-            syn_lq_name = os.path.join(f'syn_lq_{batch_idx}_{sample_idx}.png')
+            # real_hq_name = os.path.join(f'real_hq_{batch_idx}_{sample_idx}.png')
+            # syn_hq_name = os.path.join(f'syn_hq_{batch_idx}_{sample_idx}.png')
+            # real_clean_name = os.path.join(f'real_clean_{batch_idx}_{sample_idx}.png')
+            # syn_clean_name = os.path.join(f'syn_clean_{batch_idx}_{sample_idx}.png')
+            # syn_lq_name = os.path.join(f'syn_lq_{batch_idx}_{sample_idx}.png')
            
             
             #save(real_sample, cfg.test.test_result_dir, real_hq_name)
@@ -414,7 +422,12 @@ def main(args):
         with open(result_path, mode='a', newline='') as file:
             writer = csv.writer(file)
             for i in range(len(real)):
-                writer.writerow([real_output[i].item(), batch_real_similarities[i], syn_output[i].item(), batch_syn_similarities[i]])
+                writer.writerow([real_output[i].item()
+                                ,real_final_prob[i].item()
+                                ,batch_real_similarities[i]
+                                ,syn_output[i].item()
+                                ,syn_final_prob[i].item()
+                                ,batch_syn_similarities[i]])
 
     
 
