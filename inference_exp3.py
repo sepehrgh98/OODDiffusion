@@ -257,7 +257,7 @@ def main(args):
         writer.writerow(header)  # Write the header
 
 
-    for batch_idx, (real, syn, _) in enumerate(tqdm(test_loader)):
+    for batch_idx, (real, syn) in enumerate(tqdm(test_loader)):
 
         # Stage 1
         real, syn = real.to(device), syn.to(device)
@@ -350,9 +350,9 @@ def main(args):
 
             # Image Quality Metrics Calculation
             real_metrics = {
-                "psnr": psnr(real_sample,n_real_clean, psnr_metric),
-                "ssim": ssim(real_sample, n_real_clean, ssim_metric),
-                "lpips": lpips(real_sample, n_real_clean, lpips_metric),
+                "psnr": psnr(real_sample, real_clean, psnr_metric),
+                "ssim": ssim(real_sample, real_clean, ssim_metric),
+                "lpips": lpips(real_sample, real_clean, lpips_metric),
                 "brisque": brisque(real_sample, brisque_metric),
                 "musiq": musiq(real_sample, musiq_metric),
                 "nima": nima(real_sample, nima_metric),
@@ -360,9 +360,9 @@ def main(args):
             }
 
             syn_metrics = {
-                "psnr": psnr(syn_sample, n_syn_clean, psnr_metric),
-                "ssim": ssim(syn_sample, n_syn_clean, ssim_metric),
-                "lpips": lpips(syn_sample, n_syn_clean, lpips_metric),
+                "psnr": psnr(syn_sample, syn_clean, psnr_metric),
+                "ssim": ssim(syn_sample, syn_clean, ssim_metric),
+                "lpips": lpips(syn_sample, syn_clean, lpips_metric),
                 "brisque": brisque(syn_sample, brisque_metric),
                 "musiq": musiq(syn_sample, musiq_metric),
                 "nima": nima(syn_sample, nima_metric),
@@ -380,7 +380,7 @@ def main(args):
             #     ]
             #     writer.writerow(row) 
 
-        with open(result_real_path, mode='a', newline='') as real_file, open(result_syn_path, mode='a', newline='') as syn_file:
+        with open(result_real_path, mode='w', newline='') as real_file, open(result_syn_path, mode='w', newline='') as syn_file:
             real_writer = csv.writer(real_file)
             syn_writer = csv.writer(syn_file)
 
@@ -389,17 +389,17 @@ def main(args):
                     img_idx = batch_idx + i
                     real_row = [img_idx,
                         noise_level,  
-                        real_metrics["psnr"][i].item(), real_metrics["ssim"][i].item(), real_metrics["lpips"][i].item(),
-                        real_metrics["brisque"][i].item(), real_metrics["musiq"][i].item(), real_metrics["nima"][i].item(),
-                        real_metrics["niqe"][i].item()
+                        real_metrics["psnr"][i], real_metrics["ssim"][i], real_metrics["lpips"][i],
+                        real_metrics["brisque"][i], real_metrics["musiq"][i], real_metrics["nima"][i],
+                        real_metrics["niqe"][i]
                     ]
                     real_writer.writerow(real_row)
 
                     syn_row = [img_idx,
                         noise_level,  
-                        syn_metrics["psnr"][i].item(), syn_metrics["ssim"][i].item(), syn_metrics["lpips"][i].item(),
-                        syn_metrics["brisque"][i].item(), syn_metrics["musiq"][i].item(), syn_metrics["nima"][i].item(),
-                        syn_metrics["niqe"][i].item()
+                        syn_metrics["psnr"][i], syn_metrics["ssim"][i], syn_metrics["lpips"][i],
+                        syn_metrics["brisque"][i], syn_metrics["musiq"][i], syn_metrics["nima"][i],
+                        syn_metrics["niqe"][i]
                     ]
                     syn_writer.writerow(syn_row)
 

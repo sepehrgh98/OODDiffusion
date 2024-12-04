@@ -16,8 +16,7 @@ model:
       resi_connection: "1conv"
       unshuffle: True
       unshuffle_scale: 8
-      is_feature_extractor: True
-
+      
   resnet:
     target: model.ResNet50.ResNet50
 
@@ -42,5 +41,5 @@ test:
   num_workers: 0
   swin_check_dir: './weights/SwinIR/0010000.pt'
   res_check_dir: ./weights/ResNet/epoch_30.pt
-  test_result_dir: ./results
+  test_result_dir: ./results/stage1/Task2/
 

@@ -66,6 +66,32 @@ def mosaic_to_rgb(mosaic_image):
     rgb_image = torch.nn.functional.interpolate(rgb_image.unsqueeze(0), scale_factor=0.5, mode='bilinear', align_corners=False)
     return rgb_image.squeeze(0)
 
+def mosaic_to_rgb(mosaic_image):
+    """
+    Converts a 4-channel Bayer mosaic back to a 3-channel RGB image 
+    while keeping the degradation effect.
+    """
+    # Assume input mosaic_image is in shape (4, H, W)
+    red = mosaic_image[0]        # Red channel
+    green_red = mosaic_image[1]  # Green channel (red rows)
+    green_blue = mosaic_image[2] # Green channel (blue rows)
+    blue = mosaic_image[3]       # Blue channel
+
+    # Initialize an empty 3-channel RGB image
+    H, W = red.shape
+    rgb_image = torch.zeros((3, H * 2, W * 2), dtype=mosaic_image.dtype, device=mosaic_image.device)
+
+    # Map the Bayer channels back to RGB locations
+    rgb_image[0, 0::2, 0::2] = red           # Red in even rows, even cols
+    rgb_image[1, 0::2, 1::2] = green_red     # Green (red rows) in even rows, odd cols
+    rgb_image[1, 1::2, 0::2] = green_blue    # Green (blue rows) in odd rows, even cols
+    rgb_image[2, 1::2, 1::2] = blue          # Blue in odd rows, odd cols
+
+    # Interpolate missing values
+    rgb_image = torch.nn.functional.interpolate(rgb_image.unsqueeze(0), scale_factor=0.5, mode='bilinear', align_corners=False)
+    return rgb_image.squeeze(0)
+
+
 def mosaic(image):
   """Extracts RGGB Bayer planes from an RGB image."""
   image = image.permute(1, 2, 0) # Permute the image tensor to HxWxC format from CxHxW format
@@ -187,7 +213,8 @@ if __name__ == '__main__':
 
     rgb_tensor = torch.from_numpy(rgb_image).permute(2, 0, 1).to(torch.float32) 
 
-    noisy = inverse_smoothstep(rgb_tensor)
+    noisy = mosaic(rgb_tensor)
+    print(noisy.shape)
 
     original_image = rgb_tensor.permute(1, 2, 0).numpy()
     noisy_np = noisy.permute(1, 2, 0).detach().numpy()
