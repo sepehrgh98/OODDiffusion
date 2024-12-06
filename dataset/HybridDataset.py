@@ -49,8 +49,6 @@ class HybridDataset(Dataset):
     ) -> "HybridDataset":
         super(HybridDataset, self).__init__()
 
-        print("[INFO] Initializing HybridDataset...")
-
         self.data_dir = data_dir
         self.out_size = out_size
         self.crop_type = crop_type
@@ -71,9 +69,14 @@ class HybridDataset(Dataset):
             transforms.ToPILImage(),  
             transforms.Resize((out_size, out_size)),  
             transforms.ToTensor()
-            # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  
         ])
 
+        self._run()
+
+
+
+    def _run(self):
+        print("[INFO] Initializing HybridDataset...")
         # Load images
         self._check_dir()
         self.image_pairs = self._load_image_pairs()
@@ -82,6 +85,7 @@ class HybridDataset(Dataset):
         # self.final_images, self.final_labels = self._select_images()
         self.final_image_pack = self._select_images()
         print("[INFO] HybridDataset initialization complete.\n")
+
 
     def _check_dir(self):
         if not os.path.exists(self.data_dir):
@@ -285,7 +289,6 @@ class HybridDataset_non_observe(HybridDataset):
         return final_image, label
     
 
-
 class ISP_HybridDataset(HybridDataset):
     def _apply_degradations(self, img_gt):
 
@@ -313,6 +316,212 @@ class ISP_HybridDataset(HybridDataset):
         # img_lq = cv2.resize(img_lq, (w, h), interpolation=cv2.INTER_LINEAR)
 
         return img_lq
+
+
+class TestDataset(HybridDataset):
+
+    def _run(self):
+        print("[INFO] Initializing HybridDataset...")
+        # Load images
+        self._check_dir()
+
+        self.image_pairs = self._load_image_pairs()
+
+        # Generate the final dataset
+        self.final_image_pack = self._select_images()
+        print("[INFO] HybridDataset initialization complete.\n")
+
+    def _check_dir(self):
+        if not os.path.exists(self.data_dir):
+            raise FileNotFoundError(f"[ERROR] The directory '{self.data_dir}' does not exist.")
+        
+        
+        dataset_types = ['IDDataset', 'OODDataset']
+        
+        for dataset_type in dataset_types:
+            # Path to IDDataset and OODDataset
+            type_path = os.path.join(self.data_dir, dataset_type)
+            
+            if not os.path.isdir(type_path):
+                raise FileNotFoundError(f"[ERROR] Missing '{dataset_type}' directory under '{self.data_dir}'.")
+            
+            # Iterate over each dataset inside the IDDataset and OODDataset folders
+            for dataset_name in os.listdir(type_path):
+                dataset_path = os.path.join(type_path, dataset_name)
+
+                if os.path.isdir(dataset_path):
+                    lq_path = os.path.join(dataset_path, 'lq')
+                    hq_path = os.path.join(dataset_path, 'hq')
+
+                    if not os.path.isdir(lq_path) or not os.path.isdir(hq_path):
+                        raise FileNotFoundError(
+                            f"[ERROR] The dataset '{dataset_name}' in '{dataset_type}' is missing required 'lq' or 'hq' directories.\n"
+                            f"Valid structure:\n"
+                            f"{self.data_dir}/\n"
+                            f"  ├── {dataset_type}/\n"
+                            f"  │   ├── {dataset_name}/\n"
+                            f"  │   │   ├── lq/\n"
+                            f"  │   │   └── hq/"
+                        )
+                else:
+                    raise NotADirectoryError(f"[ERROR] Expected a dataset directory but found '{dataset_name}' in '{dataset_type}', which is not a directory.")
+                
+        print("[INFO] Dataset structure verified successfully.")
+
+    def _load_image_pairs(self) -> list:
+        image_pairs = {
+            'IDDataset': [],
+            'OODDataset': []
+        }
+
+        dataset_types = ['IDDataset', 'OODDataset']
+        
+        for dataset_type in dataset_types:
+            type_path = os.path.join(self.data_dir, dataset_type)
+            
+            if not os.path.isdir(type_path):
+                raise FileNotFoundError(f"[ERROR] '{dataset_type}' directory not found in '{self.data_dir}'.")
+
+            # Iterate through all datasets in either IDDataset or OODDataset
+            for dataset_name in os.listdir(type_path):
+                dataset_path = os.path.join(type_path, dataset_name)
+                
+                if not os.path.isdir(dataset_path):
+                    continue
+                
+                lq_path = os.path.join(dataset_path, 'lq')
+                hq_path = os.path.join(dataset_path, 'hq')
+
+                # Get all files in lq and hq folders
+                lq_images = [f for f in os.listdir(lq_path) if os.path.splitext(f)[1].lower() in self.valid_extensions]
+                hq_images = [f for f in os.listdir(hq_path) if os.path.splitext(f)[1].lower() in self.valid_extensions]
+
+                # Sort to ensure matching pairs (assuming matching filenames in lq and hq)
+                lq_images.sort()
+                hq_images.sort()
+
+                # Check if the number of LQ and HQ images match
+                if len(lq_images) != len(hq_images):
+                    raise ValueError(f"[ERROR] Mismatch in the number of images in 'lq' and 'hq' folders for dataset '{dataset_name}' in '{dataset_type}'.")
+
+                # Pair the images by their filenames
+                for lq_image, hq_image in zip(lq_images, hq_images):
+                    lq_image_path = os.path.join(lq_path, lq_image)
+                    hq_image_path = os.path.join(hq_path, hq_image)
+                    image_pairs[dataset_type].append((lq_image_path, hq_image_path))
+
+        print(f"[INFO] Loaded {len(image_pairs['IDDataset'])} image pairs for IDDataset successfully.")
+        print(f"[INFO] Loaded {len(image_pairs['OODDataset'])} image pairs for OODDataset successfully.")
+        return image_pairs
+    
+    def _apply_degradations(self, img, deg_type:str):
+        """
+        Apply degradation operations to create a synthetic version.
+        """
+        h, w, _ = img.shape
+        img_lq = img.copy()
+
+        if deg_type == "blur":
+            # Apply blur
+            kernel = random_mixed_kernels(
+                self.kernel_list,
+                self.kernel_prob,
+                self.blur_kernel_size,
+                self.blur_sigma,
+                self.blur_sigma,
+                [-math.pi, math.pi],
+                noise_range=None
+            )
+            img_lq = cv2.filter2D(img_lq, -1, kernel)
+        elif deg_type == "Downsample":
+            # Downsample
+            scale = np.random.uniform(self.downsample_range[0], self.downsample_range[1])
+            img_lq = cv2.resize(img_lq, (int(w // scale), int(h // scale)), interpolation=cv2.INTER_LINEAR)
+
+        elif deg_type == "JPEG_compression":
+            # JPEG compression
+            if self.jpeg_range is not None:
+                img_lq = random_add_jpg_compression(img_lq, self.jpeg_range)
+        elif deg_type == "noise":
+            # Add noise
+            if self.noise_range is not None:
+                img_lq = random_add_gaussian_noise(img_lq, self.noise_range)
+            
+
+        # Resize back to original size
+        img_lq = cv2.resize(img_lq, (w, h), interpolation=cv2.INTER_LINEAR)
+
+        # BGR to RGB, [0, 1]
+        img_lq = img_lq[..., ::-1].astype(np.float32)
+
+        return img_lq
+
+
+    def _select_images(self):
+        """
+        Generate synthetic images from IDDataset.
+        """
+        final_image_pack = []
+
+        print("[INFO] Generating synthetic images and selecting final dataset...")
+
+        degradations = ["blur", "Downsample", "JPEG_compression", "noise"]
+        selected_degradations = random.sample(degradations, 3)
+
+
+        ID_list = self.image_pairs["IDDataset"]
+        OOD_list = self.image_pairs["OODDataset"]
+
+        # In Distribution image
+
+        for _ , hq_img in ID_list:
+            # we just need hq image
+            ID_hq_image = Image.open(hq_img).convert("RGB")
+            ID_hq_image = self._clip(ID_hq_image)
+
+            # shape: (h, w, c); channel order: BGR; image range: [0, 1], float32.
+            ID_hq_image = (ID_hq_image[..., ::-1] / 255.0).astype(np.float32)
+            
+            # apply in distribution degradation
+            for deg in selected_degradations:
+
+                ID_syn_image = self._apply_degradations(ID_hq_image, deg)
+
+                # Label
+                label = 1
+
+                final_image_pack.append((ID_syn_image, label))
+
+
+        # Out of Distribution image
+
+        for lq_img, _ in OOD_list:
+            OOD_lq_image = Image.open(lq_img).convert("RGB")
+            OOD_lq_image = self._clip(OOD_lq_image)
+
+            # Shape: (h, w, c); channel order: BGR; image range: [0, 1], float32.
+            OOD_lq_image = (OOD_lq_image[..., ::-1] / 255.0).astype(np.float32)
+
+            # Label
+            label = 0
+
+            final_image_pack.append((OOD_lq_image, label))
+
+
+        random.shuffle(final_image_pack)
+
+        return final_image_pack
+    
+    def __getitem__(self, index):
+
+        img, label = self.final_image_pack[index]
+
+        # Preprocess image
+        img = self._preprocess_image(np.array(img))
+
+        return img, label
+
+   
 
 
 

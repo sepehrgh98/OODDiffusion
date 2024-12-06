@@ -5,11 +5,12 @@ import torch
 import numpy as np
 
 
-def psnr(batch1: Tensor, batch2: Tensor, psnr_metric) -> Dict:
+def psnr(batch1: Tensor, batch2: Tensor) -> Dict:
     
     # Ensure both batches are of the same size
     assert batch1.shape == batch2.shape, "Input batches must have the same shape"
     
+    psnr_metric = pyiqa.create_metric('psnr')
 
     result = []
 
@@ -21,12 +22,12 @@ def psnr(batch1: Tensor, batch2: Tensor, psnr_metric) -> Dict:
 
     return result
 
-def ssim(batch1: Tensor, batch2: Tensor, ssim_metric) -> Dict:
+def ssim(batch1: Tensor, batch2: Tensor) -> Dict:
     
     # Ensure both batches are of the same size
     assert batch1.shape == batch2.shape, "Input batches must have the same shape"
    
-
+    ssim_metric = pyiqa.create_metric('ssim')
     result = []
 
     for img1, img2 in zip(batch1, batch2):
@@ -38,12 +39,13 @@ def ssim(batch1: Tensor, batch2: Tensor, ssim_metric) -> Dict:
     return result
 
 
-def lpips(batch1: Tensor, batch2: Tensor, lpips_metric) -> Dict:
+
+def lpips(batch1: Tensor, batch2: Tensor) -> Dict:
     
     # Ensure both batches are of the same size
     assert batch1.shape == batch2.shape, "Input batches must have the same shape"
     
-
+    lpips_metric = pyiqa.create_metric('lpips')
     result = []
 
     for img1, img2 in zip(batch1, batch2):
@@ -57,9 +59,9 @@ def lpips(batch1: Tensor, batch2: Tensor, lpips_metric) -> Dict:
 
 
 
-def brisque(batch: Tensor, brisque_metric) -> Dict:
+def brisque(batch: Tensor) -> Dict:
     
-   
+    brisque_metric = pyiqa.create_metric('brisque')
     result = []
 
     for img in batch:
@@ -71,9 +73,23 @@ def brisque(batch: Tensor, brisque_metric) -> Dict:
 
     return result
 
+def clipiqa(batch: Tensor) -> Dict:
+    
+    clipiqa_metric = pyiqa.create_metric('clipiqa')
+    result = []
 
-def nima(batch: Tensor, nima_metric) -> Dict:
+    for img1 in batch:
+        clipiqa_value = clipiqa_metric(img1.unsqueeze(0)).item()
+        result.append(torch.tensor(clipiqa_value, dtype=torch.float32))
 
+    result = torch.stack(result)
+
+    return result
+
+
+def nima(batch: Tensor) -> Dict:
+
+    nima_metric = pyiqa.create_metric('nima')
     result = []
 
     for img in batch:
@@ -84,8 +100,9 @@ def nima(batch: Tensor, nima_metric) -> Dict:
 
     return result
 
-def niqe(batch: Tensor, niqe_metric) -> Dict:
+def niqe(batch: Tensor) -> Dict:
     
+    niqe_metric = pyiqa.create_metric('niqe')
     result = []
 
     for img in batch:
@@ -96,13 +113,67 @@ def niqe(batch: Tensor, niqe_metric) -> Dict:
 
     return result
 
-def musiq(batch: Tensor, musiq_metric) -> Dict:
+def musiq(batch: Tensor) -> Dict:
    
+    musiq_metric = pyiqa.create_metric('musiq')
     result = []
 
     for img in batch:
         musiq_value = musiq_metric(img.unsqueeze(0)).item()
         result.append(torch.tensor(musiq_value, dtype=torch.float32))
+
+    result = torch.stack(result)
+
+    return result
+
+def musiq_koniq(batch: Tensor) -> Dict:
+   
+    musiq_koniq_metric = pyiqa.create_metric('musiq', dataset='koniq')
+    result = []
+
+    for img in batch:
+        musiq_koniq_value = musiq_koniq_metric(img.unsqueeze(0)).item()
+        result.append(torch.tensor(musiq_koniq_value, dtype=torch.float32))
+
+    result = torch.stack(result)
+
+    return result
+
+def musiq_ava(batch: Tensor) -> Dict:
+   
+    musiq_ava_metric = pyiqa.create_metric('musiq', dataset='ava')
+    result = []
+
+    for img in batch:
+        musiq_ava_value = musiq_ava_metric(img.unsqueeze(0)).item()
+        result.append(torch.tensor(musiq_ava_value, dtype=torch.float32))
+
+    result = torch.stack(result)
+
+    return result
+
+def maniqa_koniq(batch: Tensor) -> Dict:
+   
+    maniqa_koniq_metric = pyiqa.create_metric('maniqa', dataset='koniq')
+    result = []
+
+    for img in batch:
+        maniqa_koniq_value = maniqa_koniq_metric(img.unsqueeze(0)).item()
+        result.append(torch.tensor(maniqa_koniq_value, dtype=torch.float32))
+
+    result = torch.stack(result)
+
+    return result
+
+
+def cnniqa(batch: Tensor) -> Dict:
+   
+    cnniqa_metric = pyiqa.create_metric('cnniqa')
+    result = []
+
+    for img in batch:
+        cnniqa_value = cnniqa_metric(img.unsqueeze(0)).item()
+        result.append(torch.tensor(cnniqa_value, dtype=torch.float32))
 
     result = torch.stack(result)
 

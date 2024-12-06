@@ -430,6 +430,10 @@ def main(args):
                                 ,batch_syn_similarities[i]])
 
     
+header = [
+"label", "detector_pred", "PSNR", "SSIM", "LPIPS",
+"BRISQUE", "CLIP-IQA", "NIMA", "NIQE", "MUSIQ", "MUSIQ-KONIQ", 
+"MUSIQ-AVA",  "MANIQA-KONIQ", "CNNIQA"]
 
 
 def check_device(device: str) -> str:

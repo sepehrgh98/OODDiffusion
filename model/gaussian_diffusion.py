@@ -5,8 +5,30 @@ import torch
 from torch import nn
 import numpy as np
 
+def gaussian_weights(center, n_timestep, std_dev=100):
+    """
+    Creates a Gaussian-like weight distribution centered around a specific timestep.
+    
+    Args:
+        center (int): The timestep to center the distribution.
+        n_timestep (int): Total number of timesteps.
+        std_dev (float): Standard deviation controlling the spread of the distribution.
+    
+    Returns:
+        np.ndarray: Normalized probabilities for each timestep.
+    """
+    timesteps = np.arange(n_timestep)
+    weights = np.exp(-0.5 * ((timesteps - center) / std_dev) ** 2)
+    return weights / weights.sum()  # Normalize to sum to 1
 
-def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):
+def make_beta_schedule(
+    schedule,
+    n_timestep, 
+    center_weights=None,
+    linear_start=1e-4, 
+    linear_end=2e-2, 
+    cosine_s=8e-3):
+
     if schedule == "linear":
         betas = (
             np.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=np.float64) ** 2
@@ -26,6 +48,18 @@ def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2,
         betas = np.linspace(linear_start, linear_end, n_timestep, dtype=np.float64)
     elif schedule == "sqrt":
         betas = np.linspace(linear_start, linear_end, n_timestep, dtype=np.float64) ** 0.5
+    elif schedule == "uniform":
+        # Uniform schedule: all betas have the same value.
+        uniform_value = (linear_start + linear_end) / 2  # Take an average value between start and end.
+        betas = np.full((n_timestep,), uniform_value, dtype=np.float64)
+    elif schedule == "weighted":
+        if center_weights is None:
+            raise ValueError("For 'weighted', you must specify a `center_weights`.")
+        
+        weights = gaussian_weights(center=center_weights, n_timestep=n_timestep, std_dev=50)
+        base_betas = np.linspace(linear_start, linear_end, n_timestep, dtype=np.float64)
+        betas = base_betas * weights
+        betas = np.clip(betas, a_min=0, a_max=0.999)
     else:
         raise ValueError(f"schedule '{schedule}' unknown.")
     return betas
@@ -44,6 +78,7 @@ class Diffusion(nn.Module):
         timesteps=1000,
         beta_schedule="linear",
         loss_type="l2",
+        center_weights=None,
         linear_start=1e-4,
         linear_end=2e-2,
         cosine_s=8e-3,
@@ -59,7 +94,11 @@ class Diffusion(nn.Module):
         self.parameterization = parameterization
         self.loss_type = loss_type
         
-        betas = make_beta_schedule(beta_schedule, timesteps, linear_start=linear_start, linear_end=linear_end,
+        betas = make_beta_schedule(beta_schedule, 
+                                   timesteps, 
+                                   center_weights=center_weights,
+                                   linear_start=linear_start, 
+                                   linear_end=linear_end,
                                    cosine_s=cosine_s)
         alphas = 1. - betas
         alphas_cumprod = np.cumprod(alphas, axis=0)

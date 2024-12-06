@@ -51,7 +51,7 @@ MODELS = {
 
 def run_stage1(swin_model, image, device):
     # image to tensor
-    image = torch.tensor((image / 255.).clip(0, 1), dtype=torch.float32, device=device)
+    # image = torch.tensor((image / 255.).clip(0, 1), dtype=torch.float32, device=device)
     pad_image = pad_to_multiples_of(image, multiple=64)
     # run
     output, features = swin_model(pad_image)
@@ -404,9 +404,6 @@ def main(args):
                     syn_writer.writerow(syn_row)
 
                 
-
-
-
 
 def check_device(device: str) -> str:
     if device == "cuda":
