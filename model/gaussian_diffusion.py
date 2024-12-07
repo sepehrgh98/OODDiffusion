@@ -78,7 +78,6 @@ class Diffusion(nn.Module):
         timesteps=1000,
         beta_schedule="linear",
         loss_type="l2",
-        center_weights=None,
         linear_start=1e-4,
         linear_end=2e-2,
         cosine_s=8e-3,
@@ -93,36 +92,82 @@ class Diffusion(nn.Module):
         assert parameterization in ["eps", "x0", "v"], "currently only supporting 'eps' and 'x0' and 'v'"
         self.parameterization = parameterization
         self.loss_type = loss_type
+
         
-        betas = make_beta_schedule(beta_schedule, 
+        
+        high_betas = make_beta_schedule(beta_schedule, 
                                    timesteps, 
-                                   center_weights=center_weights,
+                                   center_weights=999,
                                    linear_start=linear_start, 
                                    linear_end=linear_end,
                                    cosine_s=cosine_s)
-        alphas = 1. - betas
-        alphas_cumprod = np.cumprod(alphas, axis=0)
-        sqrt_alphas_cumprod = np.sqrt(alphas_cumprod)
-        sqrt_one_minus_alphas_cumprod = np.sqrt(1. - alphas_cumprod)
+        
+        mid_betas = make_beta_schedule(beta_schedule, 
+                                   timesteps, 
+                                   center_weights=666,
+                                   linear_start=linear_start, 
+                                   linear_end=linear_end,
+                                   cosine_s=cosine_s)
+        high_alphas = 1. - high_betas
+        mid_alphas = 1. - mid_betas
+        high_alphas_cumprod = np.cumprod(high_alphas, axis=0)
+        mid_alphas_cumprod = np.cumprod(mid_alphas, axis=0)
+        sqrt_high_alphas_cumprod = np.sqrt(high_alphas_cumprod)
+        sqrt_one_minus_high_alphas_cumprod = np.sqrt(1. - high_alphas_cumprod)
+        sqrt_mid_alphas_cumprod = np.sqrt(mid_alphas_cumprod)
+        sqrt_one_minus_mid_alphas_cumprod = np.sqrt(1. - mid_alphas_cumprod)
 
-        self.betas = betas
-        self.register("sqrt_alphas_cumprod", sqrt_alphas_cumprod)
-        self.register("sqrt_one_minus_alphas_cumprod", sqrt_one_minus_alphas_cumprod)
+        self.high_betas = high_betas
+        self.mid_betas = mid_betas
+
+        self.register("sqrt_high_alphas_cumprod", sqrt_high_alphas_cumprod)
+        self.register("sqrt_one_minus_high_alphas_cumprod", sqrt_one_minus_high_alphas_cumprod)
+
+        self.register("sqrt_mid_alphas_cumprod", sqrt_mid_alphas_cumprod)
+        self.register("sqrt_one_minus_mid_alphas_cumprod", sqrt_one_minus_mid_alphas_cumprod)
     
     def register(self, name: str, value: np.ndarray) -> None:
         self.register_buffer(name, torch.tensor(value, dtype=torch.float32))
 
-    def q_sample(self, x_start, t, noise):
-        return (
-            extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
-            extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
-        )
+    def q_sample(self, x_start, t, noise, OOD_res):
 
-    def get_v(self, x, noise, t):
-        return (
-            extract_into_tensor(self.sqrt_alphas_cumprod, t, x.shape) * noise -
-            extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x.shape) * x
-        )
+        if self.beta_schedule == "weighted":
+
+            # Compute tensors for high (ID) and mid (OOD) alphas
+            sqrt_high_alphas_cumprod = extract_into_tensor(self.sqrt_high_alphas_cumprod, t, x_start.shape)
+            sqrt_one_minus_high_alphas_cumprod = extract_into_tensor(self.sqrt_one_minus_high_alphas_cumprod, t, x_start.shape)
+                
+            sqrt_mid_alphas_cumprod = extract_into_tensor(self.sqrt_mid_alphas_cumprod, t, x_start.shape)
+            sqrt_one_minus_mid_alphas_cumprod = extract_into_tensor(self.sqrt_one_minus_mid_alphas_cumprod, t, x_start.shape)
+
+            # Expand OOD_res to match x_start dimensions
+            OOD_res_expanded = OOD_res.view(-1, 1, 1, 1)
+
+            # Compute results for ID (high) and OOD (mid)
+            high_result = (
+                sqrt_high_alphas_cumprod * x_start +
+                sqrt_one_minus_high_alphas_cumprod * noise
+            )
+
+            mid_result = (
+                sqrt_mid_alphas_cumprod * x_start +
+                sqrt_one_minus_mid_alphas_cumprod * noise
+            )
+
+            # Merge results using OOD_res
+            final_result = OOD_res_expanded * high_result + (1 - OOD_res_expanded) * mid_result
+            return final_result
+        else:
+            return (
+                extract_into_tensor(self.sqrt_high_alphas_cumprod, t, x_start.shape) * x_start +
+                extract_into_tensor(self.sqrt_one_minus_high_alphas_cumprod, t, x_start.shape) * noise
+            )
+
+    # def get_v(self, x, noise, t):
+    #     return (
+    #         extract_into_tensor(self.sqrt_alphas_cumprod, t, x.shape) * noise -
+    #         extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x.shape) * x
+    #     )
 
     def get_loss(self, pred, target, mean=True):
         if self.loss_type == 'l1':
@@ -139,19 +184,19 @@ class Diffusion(nn.Module):
 
         return loss
 
-    def p_losses(self, model, x_start, t, cond):
-        noise = torch.randn_like(x_start)
-        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        model_output = model(x_noisy, t, cond)
+    # def p_losses(self, model, x_start, t, cond):
+    #     noise = torch.randn_like(x_start)
+    #     x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+    #     model_output = model(x_noisy, t, cond)
 
-        if self.parameterization == "x0":
-            target = x_start
-        elif self.parameterization == "eps":
-            target = noise
-        elif self.parameterization == "v":
-            target = self.get_v(x_start, noise, t)
-        else:
-            raise NotImplementedError()
+    #     if self.parameterization == "x0":
+    #         target = x_start
+    #     elif self.parameterization == "eps":
+    #         target = noise
+    #     elif self.parameterization == "v":
+    #         target = self.get_v(x_start, noise, t)
+    #     else:
+    #         raise NotImplementedError()
 
-        loss_simple = self.get_loss(model_output, target, mean=False).mean()
-        return loss_simple
+    #     loss_simple = self.get_loss(model_output, target, mean=False).mean()
+    #     return loss_simple

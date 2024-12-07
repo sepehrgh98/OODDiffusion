@@ -87,13 +87,21 @@ model:
         context_dim: 1024
         legacy: False
   
-  diffusion:
+  ID_diffusion:
     target: model.gaussian_diffusion.Diffusion
     params:
       beta_schedule: uniform
       linear_start: 0.00085
       linear_end: 0.0120
       timesteps: 1000
+
+  OOD_diffusion:
+    target: model.gaussian_diffusion.Diffusion
+    params:
+      beta_schedule: uniform
+      linear_start: 0.00085
+      linear_end: 0.0120
+      timesteps: 667
 
 
 dataset:
