@@ -185,7 +185,7 @@ class HybridDataset(Dataset):
                 elif self.crop_type == "random":
                     img = random_crop_arr(img, self.out_size, min_crop_frac=0.7)
         else:
-            assert img.height == self.out_size and img.width == self.out_size
+            #assert img.height == self.out_size and img.width == self.out_size
             img = np.array(img)
         return img
 

@@ -685,3 +685,33 @@ def normalize(tensor):
     min_val = tensor.min()
     max_val = tensor.max()
     return (tensor - min_val) / (max_val - min_val + 1e-8)
+
+
+def bicubic_resize(images: np.ndarray, scale: float) -> np.ndarray:
+    """
+    Resize a batch of images using bicubic interpolation for input in [B, C, H, W] format.
+    
+    Args:
+        images (np.ndarray): A batch of images with shape [B, C, H, W].
+        scale (float): The scaling factor for resizing.
+    
+    Returns:
+        np.ndarray: A batch of resized images in [B, C, new_H, new_W] format.
+    """
+    resized_images = []
+    batch_size, channels, height, width = images.shape
+    
+    for img in images:
+        # Iterate over each channel, resize individually, and stack
+        resized_channels = []
+        for c in range(channels):
+            pil = Image.fromarray(img[c])  # Convert each channel to PIL image
+            res = pil.resize((int(width * scale), int(height * scale)), Image.BICUBIC)
+            resized_channels.append(np.array(res))
+        
+        # Stack resized channels back into a single image
+        resized_image = np.stack(resized_channels, axis=0)
+        resized_images.append(resized_image)
+    
+    # Stack resized images back into a batch
+    return np.stack(resized_images, axis=0)
