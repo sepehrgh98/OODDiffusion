@@ -207,7 +207,11 @@ class InferenceLoop:
         self.cldm.control_scales = [self.args.strength] * 13
 
         # number of steps
-        num_timesteps = torch.where(OOD_res == 1, torch.tensor(999), torch.tensor(666))
+        if self.diffusion.beta_schedule == "weighted":
+            num_timesteps = torch.full((bs, ), self.diffusion.num_timesteps - 1, dtype=torch.long, device=self.args.device)
+        else:
+            num_timesteps = torch.where(OOD_res == 1, torch.tensor(999), torch.tensor(666))
+
 
         if self.args.better_start:
             _, low_freq = wavelet_decomposition(pad_clean)
@@ -220,7 +224,7 @@ class InferenceLoop:
 
             x_T = self.diffusion.q_sample(
                x_0,
-               torch.full((bs, ), num_timesteps, dtype=torch.long, device=self.args.device),
+               num_timesteps,
                torch.randn(x_0.shape, dtype=torch.float32, device=self.args.device),
                OOD_res
             )
