@@ -5,6 +5,31 @@ import torch
 from torch import nn
 import numpy as np
 
+
+
+def dynamic_gaussian_weights(timestep, n_timestep, start_mu, end_mu, std_dev=100):
+    """
+    Creates Gaussian-like weights with a dynamically shifting mean.
+
+    Args:
+        timestep (int): The current timestep.
+        n_timestep (int): Total number of timesteps.
+        start_mu (int): Starting mean for the Gaussian distribution.
+        end_mu (int): Ending mean for the Gaussian distribution.
+        std_dev (float): Standard deviation controlling the spread of the distribution.
+
+    Returns:
+        np.ndarray: Normalized probabilities for each timestep.
+    """
+    # Linear interpolation of the mean based on the current timestep
+    dynamic_mu = start_mu + (end_mu - start_mu) * (timestep / n_timestep)
+
+    timesteps = np.arange(n_timestep)
+    weights = np.exp(-0.5 * ((timesteps - dynamic_mu) / std_dev) ** 2)
+    weights = weights / weights.sum()  # Normalize to sum to 1
+    return weights
+
+
 def gaussian_weights(center, n_timestep, std_dev=100):
     """
     Creates a Gaussian-like weight distribution centered around a specific timestep.
@@ -19,15 +44,20 @@ def gaussian_weights(center, n_timestep, std_dev=100):
     """
     timesteps = np.arange(n_timestep)
     weights = np.exp(-0.5 * ((timesteps - center) / std_dev) ** 2)
-    return weights / weights.sum()  # Normalize to sum to 1
+    weights = weights / weights.sum()  # Normalize to sum to 1
+    return weights
 
 def make_beta_schedule(
     schedule,
     n_timestep, 
     center_weights=None,
+    gaussain_var = None, 
     linear_start=1e-4, 
     linear_end=2e-2, 
-    cosine_s=8e-3):
+    cosine_s=8e-3,
+    blended_start_mu=None,
+    blended_end_mu=None
+):
 
     if schedule == "linear":
         betas = (
@@ -56,10 +86,32 @@ def make_beta_schedule(
         if center_weights is None:
             raise ValueError("For 'weighted', you must specify a `center_weights`.")
         
-        weights = gaussian_weights(center=center_weights, n_timestep=n_timestep, std_dev=50)
-        base_betas = np.linspace(linear_start, linear_end, n_timestep, dtype=np.float64)
-        betas = base_betas * weights
-        betas = np.clip(betas, a_min=0, a_max=0.999)
+        if gaussain_var is None:
+            raise ValueError("For 'weighted', you must specify a `gaussain_var`.")
+
+        # Check for blended noise transition
+        if blended_start_mu is not None and blended_end_mu is not None:
+            betas = np.zeros(n_timestep, dtype=np.float64)
+            for t in range(n_timestep):
+                weights = dynamic_gaussian_weights(
+                    timestep=t,
+                    n_timestep=n_timestep,
+                    start_mu=blended_start_mu,
+                    end_mu=blended_end_mu,
+                    std_dev=gaussain_var,
+                )
+                base_betas = np.linspace(linear_start, linear_end, n_timestep, dtype=np.float64)
+                betas += base_betas * weights
+        else:
+
+            weights = gaussian_weights(center=center_weights, n_timestep=n_timestep, std_dev=gaussain_var)
+            base_betas = np.linspace(linear_start, linear_end, n_timestep, dtype=np.float64)
+            betas = base_betas * weights
+
+        # Normalize to match the base_betas' range
+        betas = betas / betas.sum() * np.sum(base_betas)
+
+        betas = np.clip(betas, a_min=linear_start, a_max=linear_end)
     else:
         raise ValueError(f"schedule '{schedule}' unknown.")
     return betas
@@ -78,6 +130,10 @@ class Diffusion(nn.Module):
         timesteps=1000,
         beta_schedule="linear",
         loss_type="l2",
+        center_weights=None,
+        gaussain_var = None,
+        blended_start_mu=None,
+        blended_end_mu=None,
         linear_start=1e-4,
         linear_end=2e-2,
         cosine_s=8e-3,
@@ -92,82 +148,39 @@ class Diffusion(nn.Module):
         assert parameterization in ["eps", "x0", "v"], "currently only supporting 'eps' and 'x0' and 'v'"
         self.parameterization = parameterization
         self.loss_type = loss_type
-
         
-        
-        high_betas = make_beta_schedule(beta_schedule, 
+        betas = make_beta_schedule(beta_schedule, 
                                    timesteps, 
-                                   center_weights=999,
+                                   center_weights=center_weights,
+                                   gaussain_var = gaussain_var,
+                                   blended_start_mu=blended_start_mu,
+                                   blended_end_mu=blended_end_mu,
                                    linear_start=linear_start, 
                                    linear_end=linear_end,
                                    cosine_s=cosine_s)
-        
-        mid_betas = make_beta_schedule(beta_schedule, 
-                                   timesteps, 
-                                   center_weights=666,
-                                   linear_start=linear_start, 
-                                   linear_end=linear_end,
-                                   cosine_s=cosine_s)
-        high_alphas = 1. - high_betas
-        mid_alphas = 1. - mid_betas
-        high_alphas_cumprod = np.cumprod(high_alphas, axis=0)
-        mid_alphas_cumprod = np.cumprod(mid_alphas, axis=0)
-        sqrt_high_alphas_cumprod = np.sqrt(high_alphas_cumprod)
-        sqrt_one_minus_high_alphas_cumprod = np.sqrt(1. - high_alphas_cumprod)
-        sqrt_mid_alphas_cumprod = np.sqrt(mid_alphas_cumprod)
-        sqrt_one_minus_mid_alphas_cumprod = np.sqrt(1. - mid_alphas_cumprod)
+        alphas = 1. - betas
+        alphas_cumprod = np.cumprod(alphas, axis=0)
+        sqrt_alphas_cumprod = np.sqrt(alphas_cumprod)
+        sqrt_one_minus_alphas_cumprod = np.sqrt(1. - alphas_cumprod)
 
-        self.high_betas = high_betas
-        self.mid_betas = mid_betas
-
-        self.register("sqrt_high_alphas_cumprod", sqrt_high_alphas_cumprod)
-        self.register("sqrt_one_minus_high_alphas_cumprod", sqrt_one_minus_high_alphas_cumprod)
-
-        self.register("sqrt_mid_alphas_cumprod", sqrt_mid_alphas_cumprod)
-        self.register("sqrt_one_minus_mid_alphas_cumprod", sqrt_one_minus_mid_alphas_cumprod)
+        self.betas = betas
+        self.register("sqrt_alphas_cumprod", sqrt_alphas_cumprod)
+        self.register("sqrt_one_minus_alphas_cumprod", sqrt_one_minus_alphas_cumprod)
     
     def register(self, name: str, value: np.ndarray) -> None:
         self.register_buffer(name, torch.tensor(value, dtype=torch.float32))
 
-    def q_sample(self, x_start, t, noise, OOD_res):
+    def q_sample(self, x_start, t, noise):
+        return (
+            extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
+            extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
+        )
 
-        if self.beta_schedule == "weighted":
-
-            # Compute tensors for high (ID) and mid (OOD) alphas
-            sqrt_high_alphas_cumprod = extract_into_tensor(self.sqrt_high_alphas_cumprod, t, x_start.shape)
-            sqrt_one_minus_high_alphas_cumprod = extract_into_tensor(self.sqrt_one_minus_high_alphas_cumprod, t, x_start.shape)
-                
-            sqrt_mid_alphas_cumprod = extract_into_tensor(self.sqrt_mid_alphas_cumprod, t, x_start.shape)
-            sqrt_one_minus_mid_alphas_cumprod = extract_into_tensor(self.sqrt_one_minus_mid_alphas_cumprod, t, x_start.shape)
-
-            # Expand OOD_res to match x_start dimensions
-            OOD_res_expanded = OOD_res.view(-1, 1, 1, 1)
-
-            # Compute results for ID (high) and OOD (mid)
-            high_result = (
-                sqrt_high_alphas_cumprod * x_start +
-                sqrt_one_minus_high_alphas_cumprod * noise
-            )
-
-            mid_result = (
-                sqrt_mid_alphas_cumprod * x_start +
-                sqrt_one_minus_mid_alphas_cumprod * noise
-            )
-
-            # Merge results using OOD_res
-            final_result = OOD_res_expanded * high_result + (1 - OOD_res_expanded) * mid_result
-            return final_result
-        else:
-            return (
-                extract_into_tensor(self.sqrt_high_alphas_cumprod, t, x_start.shape) * x_start +
-                extract_into_tensor(self.sqrt_one_minus_high_alphas_cumprod, t, x_start.shape) * noise
-            )
-
-    # def get_v(self, x, noise, t):
-    #     return (
-    #         extract_into_tensor(self.sqrt_alphas_cumprod, t, x.shape) * noise -
-    #         extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x.shape) * x
-    #     )
+    def get_v(self, x, noise, t):
+        return (
+            extract_into_tensor(self.sqrt_alphas_cumprod, t, x.shape) * noise -
+            extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x.shape) * x
+        )
 
     def get_loss(self, pred, target, mean=True):
         if self.loss_type == 'l1':
@@ -184,19 +197,19 @@ class Diffusion(nn.Module):
 
         return loss
 
-    # def p_losses(self, model, x_start, t, cond):
-    #     noise = torch.randn_like(x_start)
-    #     x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-    #     model_output = model(x_noisy, t, cond)
+    def p_losses(self, model, x_start, t, cond):
+        noise = torch.randn_like(x_start)
+        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+        model_output = model(x_noisy, t, cond)
 
-    #     if self.parameterization == "x0":
-    #         target = x_start
-    #     elif self.parameterization == "eps":
-    #         target = noise
-    #     elif self.parameterization == "v":
-    #         target = self.get_v(x_start, noise, t)
-    #     else:
-    #         raise NotImplementedError()
+        if self.parameterization == "x0":
+            target = x_start
+        elif self.parameterization == "eps":
+            target = noise
+        elif self.parameterization == "v":
+            target = self.get_v(x_start, noise, t)
+        else:
+            raise NotImplementedError()
 
-    #     loss_simple = self.get_loss(model_output, target, mean=False).mean()
-    #     return loss_simple
+        loss_simple = self.get_loss(model_output, target, mean=False).mean()
+        return loss_simple

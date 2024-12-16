@@ -87,27 +87,34 @@ model:
         context_dim: 1024
         legacy: False
   
-  ID_diffusion:
+  id_diffusion:
     target: model.gaussian_diffusion.Diffusion
     params:
-      beta_schedule: uniform
+      beta_schedule: weighted
+      center_weights: 999
+      gaussain_var: 100
       linear_start: 0.00085
       linear_end: 0.0120
       timesteps: 1000
 
-  OOD_diffusion:
+  ood_diffusion:
     target: model.gaussian_diffusion.Diffusion
     params:
-      beta_schedule: uniform
+      beta_schedule: weighted
+      center_weights: 666 
+      blended_start_mu: 666
+      blended_end_mu: 999
+      gaussain_var: 100 
       linear_start: 0.00085
       linear_end: 0.0120
-      timesteps: 667
+      timesteps: 1000
+
 
 
 dataset:
   target: dataset.HybridDataset.TestDataset
   params:
-    data_dir : "./data/Dataset-Test"  # Create a test dataset directory with the expected structure
+    data_dir : "./data/image_test"  # Create a test dataset directory with the expected structure
     out_size : 256
     crop_type : "center" 
     blur_kernel_size : 41
@@ -127,5 +134,5 @@ test:
   cldm_check_dir: ./weights/cldm/v2-1_512-ema-pruned.ckpt
   res_check_dir: ./weights/ResNet/epoch_30.pt
   controlnet_check_dir: ./weights/ControlNet/0010000.pt
-  test_result_dir: ./results/stage2/Task4/exp1/
+  test_result_dir: ./results/stage2/Task4/exp12/
   save_image_every: 1

@@ -25,11 +25,11 @@ from Similarity import (psnr,
                         ssim,
                         clipiqa,
                         musiq,
-                        musiq_koniq,
                         musiq_ava,
                         lpips,
                         niqe,
-                        maniqa_koniq,
+                        maniqa,
+                        maniqa_kadid,
                         nima,
                         cnniqa,
                         brisque)
@@ -53,7 +53,8 @@ class InferenceLoop:
         self.cfg = OmegaConf.load(self.args.config)
         self.stage1_model = None
         self.cldm = None
-        self.diffusion = None
+        self.id_diffusion = None
+        self.ood_diffusion = None
         self.cond_fn = None
         self.OOD_detector = None
         
@@ -75,7 +76,7 @@ class InferenceLoop:
         print("[INFO] Load ControlLDM...")
         self.cldm: ControlLDM = instantiate_from_config(self.cfg.model.cldm)
         # sd = load_model_from_url(MODELS["sd_v21"])
-        sd = load_model_from_checkpoint(self.cfg.test.diffusion_check_dir)
+        sd = load_model_from_checkpoint(self.cfg.test.cldm_check_dir)
         unused = self.cldm.load_pretrained_sd(sd)
         print(f"[INFO] strictly load pretrained sd_v2.1, unused weights: {unused}")
 
@@ -89,8 +90,12 @@ class InferenceLoop:
 
         ### load diffusion
         print("[INFO] Load Diffusion...")
-        self.diffusion: Diffusion = instantiate_from_config(self.cfg.model.diffusion)
-        self.diffusion.to(self.args.device)
+        self.id_diffusion: Diffusion = instantiate_from_config(self.cfg.model.id_diffusion)
+        self.id_diffusion.to(self.args.device)
+
+        self.ood_diffusion: Diffusion = instantiate_from_config(self.cfg.model.ood_diffusion)
+        self.ood_diffusion.to(self.args.device)
+
 
         # Initialize Condition
         if not self.args.guidance:
@@ -129,19 +134,19 @@ class InferenceLoop:
     def setup(self):
 
         # Make dir
-        self.output_dir = self.args.output
+        self.output_dir = self.cfg.test.test_result_dir
         os.makedirs(self.output_dir, exist_ok=True)
         self.quant_res_path = os.path.join(self.output_dir,"quantative")
         os.makedirs(self.quant_res_path, exist_ok=True)
-        self.quant_res_path = os.path.join(self.quant_res_path, "uniform_results.csv")
+        self.quant_res_path = os.path.join(self.quant_res_path, "weighted_results.csv")
         self.qual_res_path = os.path.join(self.output_dir,"qualitative")
         os.makedirs(self.qual_res_path, exist_ok=True)
 
         # Make csv output
         header = [
         "label", "detector_pred", "PSNR", "SSIM", "LPIPS",
-        "BRISQUE", "CLIP-IQA", "NIMA", "NIQE", "MUSIQ", "MUSIQ-KONIQ", 
-        "MUSIQ-AVA",  "MANIQA-KONIQ", "CNNIQA"]
+        "BRISQUE", "CLIP-IQA", "NIMA", "NIQE", "MUSIQ", 
+        "MUSIQ-AVA",  "MANIQA", "MANIQA-KADID", "CNNIQA"]
 
         # Open CSV file in write mode and write the header
         with open(self.quant_res_path, mode='w', newline='') as file:
@@ -207,8 +212,8 @@ class InferenceLoop:
         self.cldm.control_scales = [self.args.strength] * 13
 
         # number of steps
-        if self.diffusion.beta_schedule == "weighted":
-            num_timesteps = torch.full((bs, ), self.diffusion.num_timesteps - 1, dtype=torch.long, device=self.args.device)
+        if self.id_diffusion.beta_schedule == "weighted":
+            num_timesteps = torch.full((bs, ), self.id_diffusion.num_timesteps - 1, dtype=torch.long, device=self.args.device)
         else:
             num_timesteps = torch.where(OOD_res == 1, torch.tensor(999), torch.tensor(666))
 
@@ -222,22 +227,42 @@ class InferenceLoop:
                 x_0 = self.cldm.vae_encode_tiled(low_freq, self.args.tile_size, self.args.tile_stride)
 
 
-            x_T = self.diffusion.q_sample(
-               x_0,
-               num_timesteps,
-               torch.randn(x_0.shape, dtype=torch.float32, device=self.args.device),
-               OOD_res
-            )
+            if OOD_res.item():
+                x_T = self.id_diffusion.q_sample(
+                    x_0,
+                    num_timesteps,
+                    torch.randn(x_0.shape, dtype=torch.float32, device=self.args.device))
+            else:
+                x_T = self.ood_diffusion.q_sample(
+                    x_0,
+                    num_timesteps,
+                    torch.randn(x_0.shape, dtype=torch.float32, device=self.args.device))
         else:
             x_T = torch.randn((bs, 4, h // 8, w // 8), dtype=torch.float32, device=self.device)
 
         ### run sampler
-        sampler = SpacedSampler(self.diffusion.betas)
-        z = sampler.sample(
-            model=self.cldm, device=self.args.device, steps=self.args.steps, batch_size=bs, x_size=(4, h // 8, w // 8),
-            cond=cond, uncond=uncond, cfg_scale=self.args.cfg_scale, x_T=x_T, progress=True,
-            progress_leave=True, cond_fn=self.cond_fn, tiled=self.args.tiled, tile_size=self.args.tile_size, tile_stride=self.args.tile_stride
-        )
+        if OOD_res.item():
+            sampler = SpacedSampler(self.id_diffusion.betas)
+            z = sampler.sample(
+                model=self.cldm, device=self.args.device, steps=self.args.steps, batch_size=bs, x_size=(4, h // 8, w // 8),
+                cond=cond, uncond=uncond, cfg_scale=self.args.cfg_scale, x_T=x_T, progress=True,
+                progress_leave=True, cond_fn=self.cond_fn, tiled=self.args.tiled, tile_size=self.args.tile_size, tile_stride=self.args.tile_stride,
+                transition_mean=self.cfg.model.id_diffusion.params.center_weights,
+                std_dev=self.cfg.model.id_diffusion.params.gaussain_var,
+                final_stage_ratio=0.3
+            )
+
+        else:
+            sampler = SpacedSampler(self.ood_diffusion.betas)
+            z = sampler.sample(
+                model=self.cldm, device=self.args.device, steps=self.args.steps, batch_size=bs, x_size=(4, h // 8, w // 8),
+                cond=cond, uncond=uncond, cfg_scale=self.args.cfg_scale, x_T=x_T, progress=True,
+                progress_leave=True, cond_fn=self.cond_fn, tiled=self.args.tiled, tile_size=self.args.tile_size, tile_stride=self.args.tile_stride,
+                transition_mean=self.cfg.model.ood_diffusion.params.center_weights,
+                std_dev=self.cfg.model.ood_diffusion.params.gaussain_var,
+                final_stage_ratio=0.3
+            )
+
 
         if not self.args.tiled:
             x = self.cldm.vae_decode(z)
@@ -297,45 +322,45 @@ class InferenceLoop:
 
             # Image Quality Metrics Calculation
             Q_metrics = {
-                "psnr": psnr(sample, img_clean),
-                "ssim": ssim(sample, img_clean),
-                "clipiqa": clipiqa(sample, img_clean),
-                "musiq": musiq(sample),
-                "musiq_koniq": musiq_koniq(sample),
-                "musiq_ava": musiq_ava(sample),
-                "lpips": lpips(sample, img_clean),
-                "niqe": niqe(sample),
-                "maniqa_koniq": maniqa_koniq(sample),
-                "nima": nima(sample),
-                "cnniqa": cnniqa(sample),
-                "brisque": brisque(sample, img_clean),
+                "psnr": psnr(sample, img_clean, self.q_metrics_model["psnr"]),
+                "ssim": ssim(sample, img_clean, self.q_metrics_model["ssim"]),
+                "clipiqa": clipiqa(sample, self.q_metrics_model["clipiqa"]),
+                "musiq": musiq(sample, self.q_metrics_model["musiq"]),
+                "musiq_ava": musiq_ava(sample, self.q_metrics_model["musiq_ava"]),
+                "lpips": lpips(sample, img_clean, self.q_metrics_model["lpips"]),
+                "niqe": niqe(sample, self.q_metrics_model["niqe"]),
+                "maniqa": maniqa(sample, self.q_metrics_model["maniqa"]),
+                "maniqa_kadid": maniqa_kadid(sample, self.q_metrics_model["maniqa_kadid"]),
+                "nima": nima(sample, self.q_metrics_model["nima"]),
+                "cnniqa": cnniqa(sample, self.q_metrics_model["cnniqa"]),
+                "brisque": brisque(sample, self.q_metrics_model["brisque"]),
             }
 
             # Save Quality metrics in csv file
-            with open(self.quant_res_path, mode='w', newline='') as file:
+            with open(self.quant_res_path, mode='a', newline='') as file:
                 writer = csv.writer(file)
 
                 for i in range(len(img)):
                     writer.writerow([label[i].item()
                         ,OOD_res[i].item()
-                        ,Q_metrics["psnr"][i]
-                        ,Q_metrics["ssim"][i]
-                        ,Q_metrics["lpips"][i]
-                        ,Q_metrics["brisque"][i]
-                        ,Q_metrics["clipiqa"][i]
-                        ,Q_metrics["nima"][i]
-                        ,Q_metrics["niqe"][i]
-                        ,Q_metrics["musiq"][i]
-                        ,Q_metrics["musiq_koniq"][i]
-                        ,Q_metrics["musiq_ava"][i]
-                        ,Q_metrics["maniqa_koniq"][i]
-                        ,Q_metrics["cnniqa"][i]
+                        ,Q_metrics["psnr"][i].item()
+                        ,Q_metrics["ssim"][i].item()
+                        ,Q_metrics["lpips"][i].item()
+                        ,Q_metrics["brisque"][i].item()
+                        ,Q_metrics["clipiqa"][i].item()
+                        ,Q_metrics["nima"][i].item()
+                        ,Q_metrics["niqe"][i].item()
+                        ,Q_metrics["musiq"][i].item()
+                        ,Q_metrics["musiq_ava"][i].item()
+                        ,Q_metrics["maniqa"][i].item()
+                        ,Q_metrics["maniqa_kadid"][i].item()
+                        ,Q_metrics["cnniqa"][i].item()
                         ])
 
-            if batch_idx % self.test.cfg.save_image_every == 0:       
+            if batch_idx % self.cfg.test.save_image_every == 0:       
                 # Save sample images
-                self.save(img[0], f"{batch_idx}_LR")
-                self.save(sample[0], f"{batch_idx}_HR")
+                self.save(img[0], f"{batch_idx}_{label[0]}_LR.png")
+                self.save(sample[0], f"{batch_idx}_{label[0]}_HR.png")
 
         
         # Calculate and print overall accuracy
@@ -343,8 +368,9 @@ class InferenceLoop:
         print(f"[INFO] OOD Detection Accuracy: {accuracy:.2f}%")
 
     def save(self, img, prefix):
-        img = rearrange(img * 255., "n c h w -> n h w c")
-        img = img.contiguous().clamp(0, 255).to(torch.uint8).cpu()
+        img = img * 255.
+        img = img.contiguous().clamp(0, 255).to(torch.uint8).cpu().numpy()
+        img = img.transpose(1, 2, 0)
 
         save_path = os.path.join(self.qual_res_path, prefix)
         Image.fromarray(img).save(save_path)
