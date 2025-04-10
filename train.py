@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 
 from model.ResNet50 import ResNet50
-from dataset.HybridDataset import HybridDataset
+from dataset.OODDataset import OOD_Dataset
 from utils import instantiate_from_config
 
 import os
@@ -60,13 +60,13 @@ def main(args) -> None:
 
     # Setup data
     print("[INFO] Initializing Dataset...")
-    dataset: HybridDataset = instantiate_from_config(cfg.dataset.train)
+    dataset: OOD_Dataset = instantiate_from_config(cfg.dataset.train)
     loader = DataLoader(
         dataset=dataset, batch_size=cfg.train.batch_size,
         num_workers=cfg.train.num_workers,
         shuffle=True)
     
-    val_dataset: HybridDataset = instantiate_from_config(cfg.dataset.val)
+    val_dataset: OOD_Dataset = instantiate_from_config(cfg.dataset.val)
     val_loader = DataLoader(
         dataset=val_dataset, batch_size=cfg.train.batch_size,
         num_workers=cfg.train.num_workers,

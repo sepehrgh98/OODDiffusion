@@ -143,7 +143,8 @@ class WindowAttention(nn.Module):
         else:
             attn = self.softmax(attn)
 
-        attn = self.attn_drop(attn)
+        attn = self.attn_drop(attn).half()
+        
 
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
         x = self.proj(x)
@@ -863,24 +864,24 @@ class SwinIR(nn.Module):
         if self.upsampler == 'pixelshuffle':
             # for classical SR
             x = self.conv_first(x)
-            x_feature = self.conv_after_body(self.forward_features(x)) + x
-
-            x = self.conv_before_upsample(x_feature)
+            x = self.conv_after_body(self.forward_features(x)) + x
+            x_feature = x
+            x = self.conv_before_upsample(x)
             x = self.conv_last(self.upsample(x))
 
         elif self.upsampler == 'pixelshuffledirect':
             # for lightweight SR
             x = self.conv_first(x)
-            x_feature = self.conv_after_body(self.forward_features(x)) + x
-
-            x = self.upsample(x_feature)
+            x = self.conv_after_body(self.forward_features(x)) + x
+            x_feature = x
+            x = self.upsample(x)
 
         elif self.upsampler == 'nearest+conv':
             # for real-world SR
             x = self.conv_first(x)
-            x_feature = self.conv_after_body(self.forward_features(x)) + x 
-
-            x = self.conv_before_upsample(x_feature)
+            x = self.conv_after_body(self.forward_features(x)) + x
+            x_feature = x
+            x = self.conv_before_upsample(x)
             x = self.lrelu(self.conv_up1(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
             if self.upscale == 4:
                 x = self.lrelu(self.conv_up2(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
@@ -891,8 +892,8 @@ class SwinIR(nn.Module):
         else:
             # for image denoising and JPEG compression artifact reduction
             x_first = self.conv_first(x)
-            x_feature = self.conv_after_body(self.forward_features(x_first)) + x_first
-
+            res = self.conv_after_body(self.forward_features(x_first)) + x_first
+            x_feature = res
             x = x + self.conv_last(x_feature)
 
         

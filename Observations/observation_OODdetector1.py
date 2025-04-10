@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from model.SwinIR import SwinIR
 from model.ResNet50 import ResNet50
-from dataset.HybridDataset import HybridDataset
+from dataset.OODDataset import OOD_Dataset
 from utils import (instantiate_from_config
                    , load_model_from_checkpoint
                 #    , resize_short_edge_to
@@ -68,7 +68,7 @@ def main(args):
     resnet_model.eval().to(device)
 
     # Setup data
-    dataset: HybridDataset = instantiate_from_config(cfg.dataset)
+    dataset: OOD_Dataset = instantiate_from_config(cfg.dataset)
     test_loader = DataLoader(
         dataset=dataset, batch_size=cfg.test.batch_size,
         num_workers=cfg.test.num_workers,

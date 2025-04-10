@@ -145,7 +145,7 @@ def median_filter_4d(tensor, size=3):
     # Loop through each image in the batch
     for i in range(tensor.shape[0]):
         # Detach the tensor and convert it to a NumPy array
-        detached_image = tensor[i].detach().cpu().numpy()
+        detached_image = tensor[i].detach().cpu().numpy().astype(np.float32)
 
         # Apply median filter to each channel of the image
         smoothed_image = median_filter(detached_image, size=size)
@@ -715,3 +715,28 @@ def bicubic_resize(images: np.ndarray, scale: float) -> np.ndarray:
     
     # Stack resized images back into a batch
     return np.stack(resized_images, axis=0)
+
+
+def load_model_from_url(url: str) -> Dict[str, torch.Tensor]:
+    sd_path = load_file_from_url(url, model_dir="weights")
+    sd = torch.load(sd_path, map_location="cpu", weights_only=False)
+    if "state_dict" in sd:
+        sd = sd["state_dict"]
+    if list(sd.keys())[0].startswith("module"):
+        sd = {k[len("module."):]: v for k, v in sd.items()}
+    return sd
+
+def bicubic_resize(img: np.ndarray, scale: float) -> np.ndarray:
+    pil = Image.fromarray(img)
+    res = pil.resize(tuple(int(x * scale) for x in pil.size), Image.BICUBIC)
+    return np.array(res)
+
+def resize_short_edge_to(imgs: torch.Tensor, size: int) -> torch.Tensor:
+    _, _, h, w = imgs.size()
+    if h == w:
+        new_h, new_w = size, size
+    elif h < w:
+        new_h, new_w = size, int(w * (size / h))
+    else:
+        new_h, new_w = int(h * (size / w)), size
+    return F.interpolate(imgs, size=(new_h, new_w), mode="bicubic", antialias=True)

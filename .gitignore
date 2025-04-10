@@ -22,6 +22,39 @@ __pycache__/
 # Ignore a specific folder (e.g., dataset or other generated data)
 data/
 results/
+ComparitiveStudy/BSRGAN/CSDataset/
+ComparitiveStudy/BSRGAN/CSDataset2/
+ComparitiveStudy/BSRGAN/results/
+ComparitiveStudy/BSRGAN/results2/
+
+ComparitiveStudy/FeMaSR/CSDataset/
+ComparitiveStudy/FeMaSR/CSDataset2/
+ComparitiveStudy/FeMaSR/results_x4/
+ComparitiveStudy/FeMaSR/results2/
+
+ComparitiveStudy/PASD/CSDataset/
+ComparitiveStudy/PASD/CSDataset2/
+ComparitiveStudy/PASD/output/
+ComparitiveStudy/PASD/output2/
+
+
+ComparitiveStudy/Real-ESRGAN/CSDataset/
+ComparitiveStudy/Real-ESRGAN/CSDataset2/
+ComparitiveStudy/Real-ESRGAN/results/
+ComparitiveStudy/Real-ESRGAN/results2/
+
+ComparitiveStudy/RealSR/CSDataset/
+ComparitiveStudy/RealSR/results/
+
+ComparitiveStudy/ResShift/CSDataset/
+ComparitiveStudy/ResShift/CSDataset2/
+ComparitiveStudy/ResShift/results/
+ComparitiveStudy/ResShift/results2/
+
+ComparitiveStudy/StableSR/CSDataset/
+ComparitiveStudy/StableSR/CSDataset2/
+ComparitiveStudy/StableSR/results/
+ComparitiveStudy/StableSR/results2/
 
 # Ignore all files with .env extension (for environment configuration)
 *.env

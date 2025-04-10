@@ -4,30 +4,31 @@ from typing import Tuple
 import torch
 from torch import nn
 import numpy as np
+import matplotlib.pyplot as plt
 
-
-
-def dynamic_gaussian_weights(timestep, n_timestep, start_mu, end_mu, std_dev=100):
+def save_beta_plot(betas, filename="beta_values_plot.png"):
     """
-    Creates Gaussian-like weights with a dynamically shifting mean.
+    Saves a plot of beta values across timesteps.
 
     Args:
-        timestep (int): The current timestep.
-        n_timestep (int): Total number of timesteps.
-        start_mu (int): Starting mean for the Gaussian distribution.
-        end_mu (int): Ending mean for the Gaussian distribution.
-        std_dev (float): Standard deviation controlling the spread of the distribution.
-
-    Returns:
-        np.ndarray: Normalized probabilities for each timestep.
+        betas (numpy.ndarray): The array of beta values.
+        filename (str): The filename to save the plot.
     """
-    # Linear interpolation of the mean based on the current timestep
-    dynamic_mu = start_mu + (end_mu - start_mu) * (timestep / n_timestep)
+    n_timestep = len(betas)
 
-    timesteps = np.arange(n_timestep)
-    weights = np.exp(-0.5 * ((timesteps - dynamic_mu) / std_dev) ** 2)
-    weights = weights / weights.sum()  # Normalize to sum to 1
-    return weights
+    # Plot beta values
+    plt.figure(figsize=(10, 5))
+    plt.plot(np.arange(n_timestep), betas, label="Beta Values", color="blue")
+    plt.xlabel("Timestep")
+    plt.ylabel("Beta Value")
+    plt.title("Beta Values Across Timesteps")
+    plt.grid(True)
+    plt.legend()
+
+    # Save plot instead of showing it
+    plt.savefig(filename, dpi=300, bbox_inches="tight")
+    plt.close()
+
 
 
 def gaussian_weights(center, n_timestep, std_dev=100):
@@ -89,29 +90,20 @@ def make_beta_schedule(
         if gaussain_var is None:
             raise ValueError("For 'weighted', you must specify a `gaussain_var`.")
 
-        # Check for blended noise transition
         if blended_start_mu is not None and blended_end_mu is not None:
-            betas = np.zeros(n_timestep, dtype=np.float64)
-            for t in range(n_timestep):
-                weights = dynamic_gaussian_weights(
-                    timestep=t,
-                    n_timestep=n_timestep,
-                    start_mu=blended_start_mu,
-                    end_mu=blended_end_mu,
-                    std_dev=gaussain_var,
-                )
-                base_betas = np.linspace(linear_start, linear_end, n_timestep, dtype=np.float64)
-                betas += base_betas * weights
-        else:
+            beta_min = linear_start   # Small noise at the start
+            beta_max = linear_end
+            k = 0.05          
+            t0 = 666
+            t = np.arange(n_timestep)
+            betas = beta_min + (beta_max - beta_min) / (1 + np.exp(-k * (t - t0)))
 
+        else:
             weights = gaussian_weights(center=center_weights, n_timestep=n_timestep, std_dev=gaussain_var)
             base_betas = np.linspace(linear_start, linear_end, n_timestep, dtype=np.float64)
             betas = base_betas * weights
 
-        # Normalize to match the base_betas' range
-        betas = betas / betas.sum() * np.sum(base_betas)
 
-        betas = np.clip(betas, a_min=linear_start, a_max=linear_end)
     else:
         raise ValueError(f"schedule '{schedule}' unknown.")
     return betas
@@ -148,6 +140,7 @@ class Diffusion(nn.Module):
         assert parameterization in ["eps", "x0", "v"], "currently only supporting 'eps' and 'x0' and 'v'"
         self.parameterization = parameterization
         self.loss_type = loss_type
+        self.center_weights=center_weights
         
         betas = make_beta_schedule(beta_schedule, 
                                    timesteps, 
@@ -158,6 +151,10 @@ class Diffusion(nn.Module):
                                    linear_start=linear_start, 
                                    linear_end=linear_end,
                                    cosine_s=cosine_s)
+
+        save_beta_plot(betas)
+
+        
         alphas = 1. - betas
         alphas_cumprod = np.cumprod(alphas, axis=0)
         sqrt_alphas_cumprod = np.sqrt(alphas_cumprod)

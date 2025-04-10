@@ -16,16 +16,15 @@ model:
       resi_connection: "1conv"
       unshuffle: True
       unshuffle_scale: 8
-      
   resnet:
     target: model.ResNet50.ResNet50
 
 dataset:
-  target: dataset.OODDataset.OOD_Dataset
+  target: dataset.OODDataset.OOD_Inference
   params:
-    data_dir : "./data/test"  # Create a test dataset directory with the expected structure
-    out_size : 224
-    crop_type : "center"
+    data_dir : "./data/Dataset-Test"  # Create a test dataset directory with the expected structure
+    out_size : 256
+    crop_type : "center" 
     blur_kernel_size : 41
     kernel_list : ['iso', 'aniso']
     kernel_prob : [0.5, 0.5]
@@ -35,11 +34,13 @@ dataset:
     jpeg_range : [30, 100]
     valid_extensions : [".png", ".jpg", ".jpeg"]
 
-
+    
 test:
-  batch_size: 4
+  batch_size: 1
   num_workers: 0
-  swin_check_dir: './weights/SwinIR/0010000.pt'
+  swin_check_dir: ./weights/SwinIR/0010000.pt
+  cldm_check_dir: ./weights/cldm/v2-1_512-ema-pruned.ckpt
   res_check_dir: ./weights/ResNet/epoch_30.pt
-  test_result_dir: ./results/stage1/Task2/
-
+  controlnet_check_dir: ./weights/ControlNet/0010000.pt
+  test_result_dir: ./results/stage2/Task4/exp13/
+  save_image_every: 1

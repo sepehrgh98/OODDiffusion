@@ -13,7 +13,7 @@ train:
 
 dataset:
   train:
-    target: dataset.HybridDataset.HybridDataset
+    target: dataset.OODDataset.OOD_Dataset
     params:
       data_dir : "./data/train"  # Create a test dataset directory with the expected structure
       out_size : 224
@@ -28,7 +28,7 @@ dataset:
       valid_extensions : [".png", ".jpg", ".jpeg"]
 
   val:
-    target: dataset.HybridDataset.HybridDataset
+    target: dataset.OODDataset.OOD_Dataset
     params:
       data_dir : "./data/val"  # Create a test dataset directory with the expected structure
       out_size : 224

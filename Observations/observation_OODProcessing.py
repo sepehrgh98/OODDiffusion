@@ -10,7 +10,9 @@ from accelerate.utils import set_seed
 import os
 import csv
 import pyiqa
-
+import numpy as np
+import cv2
+import gc
 
 
 from utils import (pad_to_multiples_of
@@ -20,20 +22,26 @@ from utils import (pad_to_multiples_of
                    , wavelet_decomposition
                    , wavelet_reconstruction
                    , calculate_noise_levels
-                   , save
                    , normalize
-                   , median_filter_4d
-                   , cosine_similarity)
+                   , load_model_from_url
+                   ,bicubic_resize
+                   ,resize_short_edge_to)
 
-from Similarity import psnr
 
+from Similarity import (psnr
+                        ,ssim
+                        ,brisque
+                        ,musiq
+                        ,nima
+                        ,niqe
+                        ,lpips)
 
 from model.SwinIR import SwinIR
 from model.cldm import ControlLDM
 from model.gaussian_diffusion import Diffusion
 from model.cond_fn import MSEGuidance, WeightedMSEGuidance
 from model.sampler import SpacedSampler
-from dataset.HybridDataset import HybridDataset, ISP_HybridDataset
+from dataset.OODDataset import OOD_Dataset
 
 
 MODELS = {
@@ -46,14 +54,16 @@ MODELS = {
 
  
 
-def run_stage1(swin_model, image, device):
-    # image to tensor
-    # image = torch.tensor((image / 255.).clip(0, 1), dtype=torch.float32, device=device)
-    pad_image = pad_to_multiples_of(image, multiple=64)
-    # run
-    output, features = swin_model(pad_image)
+def run_stage1(swin_model, lq, device):
+    if min(lq.shape[2:]) < 512:
+        lq = resize_short_edge_to(lq, size=512)
+    ori_h, ori_w = lq.shape[2:]
+    pad_lq = pad_to_multiples_of(lq, multiple=64)
+    clean, features = swin_model(pad_lq)
+    # remove padding
+    clean = clean[:, :, :ori_h, :ori_w]
 
-    return output, features
+    return clean, features
 
 
 def run_stage2(
@@ -74,7 +84,6 @@ def run_stage2(
     noise_levels: list
 ) -> torch.Tensor:
     
-
     ### preprocess
     bs, _, ori_h, ori_w = clean.shape
     
@@ -82,8 +91,7 @@ def run_stage2(
     # pad: ensure that height & width are multiples of 64
     pad_clean = pad_to_multiples_of(clean, multiple=64)
     h, w = pad_clean.shape[2:]
-      
-
+    
     
     # prepare conditon
     if not tiled:
@@ -92,14 +100,14 @@ def run_stage2(
     else:
         cond = cldm.prepare_condition_tiled(pad_clean, [pos_prompt] * bs, tile_size, tile_stride)
         uncond = cldm.prepare_condition_tiled(pad_clean, [neg_prompt] * bs, tile_size, tile_stride)
+
     if cond_fn:
         cond_fn.load_target(pad_clean * 2 - 1)
+
     old_control_scales = cldm.control_scales
     cldm.control_scales = [strength] * 13
+
     if better_start:
-        # using noised low frequency part of condition as a better start point of 
-        # reverse sampling, which can prevent our model from generating noise in 
-        # image background.
         _, low_freq = wavelet_decomposition(pad_clean)
 
         if not tiled:
@@ -108,52 +116,40 @@ def run_stage2(
             x_0 = cldm.vae_encode_tiled(low_freq, tile_size, tile_stride)
         
 
-
-        #x_T = diffusion.q_sample(
-        #    x_0,
-        #    torch.full((bs, ), diffusion.num_timesteps - 1, dtype=torch.long, device=device),
-        #    torch.randn(x_0.shape, dtype=torch.float32, device=device)
-        #)
-
-
         # add noise
         x_T_s = add_diffusion_noise(x_0 = x_0
-                                           , diffusion = diffusion
-                                           , noise_levels = noise_levels
-                                           , device = device) # [X_T1 , X_T2 ,...]
+                                    , diffusion = diffusion
+                                    , noise_levels = noise_levels
+                                    , device = device) # [X_T1 , X_T2 ,...]
 
 
     else:
         x_T_s = [torch.randn((bs, 4, h // 8, w // 8), dtype=torch.float32, device=device) for _ in range(len(noise_levels))]
-    
+
+    torch.cuda.empty_cache()
+    gc.collect()
+
     ### run sampler
     sampler = SpacedSampler(diffusion.betas)
-   
 
     clean_samples = []
 
     for x_T in x_T_s:
+        z = sampler.sample(
+            model=cldm, device=device, steps=steps, batch_size=bs, x_size=(4, h // 8, w // 8),
+            cond=cond, uncond=uncond, cfg_scale=cfg_scale, x_T=x_T, progress=True,
+            progress_leave=True, cond_fn=cond_fn, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride
+        )
 
-       z = sampler.sample(
-           model=cldm, device=device, steps=steps, batch_size=bs, x_size=(4, h // 8, w // 8),
-           cond=cond, uncond=uncond, cfg_scale=cfg_scale, x_T=x_T, progress=True,
-           progress_leave=True, cond_fn=cond_fn, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride
-       )
+        if not tiled:
+            x = cldm.vae_decode(z)
+        else:
+            x = cldm.vae_decode_tiled(z, tile_size // 8, tile_stride // 8)
 
-
-       if not tiled:
-           x = cldm.vae_decode(z)
-       else:
-           x = cldm.vae_decode_tiled(z, tile_size // 8, tile_stride // 8)
-
-
-       ### postprocess
-       cldm.control_scales = old_control_scales
-       sample = x[:, :, :ori_h, :ori_w]
-
-
-       clean_samples.append(sample)
-
+        ### postprocess
+        cldm.control_scales = old_control_scales
+        sample = x[:, :, :ori_h, :ori_w]
+        clean_samples.append(sample)
 
     return clean_samples
 
@@ -167,6 +163,24 @@ def add_diffusion_noise(x_0, diffusion, noise_levels, device):
         x_T = diffusion.q_sample(x_0, noise_scale, noise)
         noisy_versions.append(x_T)
     return noisy_versions
+
+
+def after_load_lq(lq_batch, args):
+    batch_res = []
+    
+    for lq in lq_batch:
+        lq = lq.cpu().numpy().transpose(1, 2, 0)
+        lq = (lq * 255.).clip(0, 255).astype(np.uint8)
+        res = bicubic_resize(lq, args.upscale)
+        res = cv2.resize(res, (256, 256), interpolation=cv2.INTER_AREA)
+        res = (res / 255.0).astype(np.float32).clip(0, 1)
+        res = torch.from_numpy(res).permute(2, 0, 1)  # No need for unsqueeze(0) here
+
+        batch_res.append(res)
+
+    return torch.stack(batch_res).cuda()
+
+
 
 def main(args):
     
@@ -224,17 +238,9 @@ def main(args):
         )
 
 
-   # Initialize ResNet
-    print("[INFO] Load ResNet...")
-    resnet_model = instantiate_from_config(cfg.model.resnet)
-    rd = load_model_from_checkpoint(cfg.test.res_check_dir)
-    resnet_model.load_state_dict(rd, strict=True)
-    resnet_model.eval().to(device)
-
     # Setup data
     print("[INFO] Setup Dataset...")
-    dataset: HybridDataset = instantiate_from_config(cfg.dataset)
-    # dataset: ISP_HybridDataset = instantiate_from_config(cfg.dataset)
+    dataset: OOD_Dataset = instantiate_from_config(cfg.dataset)
     test_loader = DataLoader(
     dataset=dataset, batch_size=cfg.test.batch_size,
     num_workers=cfg.test.num_workers,
@@ -245,65 +251,59 @@ def main(args):
     noise_levels = calculate_noise_levels(
                     num_timesteps = diffusion.num_timesteps
                     , num_levels = args.num_levels)
-    
 
 
     # Setup Similarity Metrics
     psnr_metric = pyiqa.create_metric('psnr')
-
+    ssim_metric = pyiqa.create_metric('ssim')
+    lpips_metric = pyiqa.create_metric('lpips')
+    brisque_metric = pyiqa.create_metric('brisque')
+    nima_metric = pyiqa.create_metric('nima')
+    niqe_metric = pyiqa.create_metric('niqe')
+    musiq_metric = pyiqa.create_metric('musiq')
 
 
 
     # Setup result path
-    result_path = os.path.join(cfg.test.test_result_dir, 'DRealSR_results_vaghei.csv')
+    result_syn_path = os.path.join(cfg.test.test_result_dir, 'results-3-syn.csv')
+    result_real_path = os.path.join(cfg.test.test_result_dir, 'results-3-real.csv')
 
-    with open(result_path, mode='w', newline='') as file:
+    header = [
+        "Image_Index", "Noise_level", "PSNR", "SSIM", "LPIPS",
+        "BRISQUE", "MUSIQ", "NIMA", "NIQE"
+    ]
+
+    # Open CSV file in write mode and write the header
+    with open(result_real_path, mode='w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(['real_res', 'real_method1', 'real_PSNR','syn_res', 'syn_method1', 'syn_PSNR'])
+        writer.writerow(header)  # Write the header
+
+    # Open CSV file in write mode and write the header
+    with open(result_syn_path, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(header)  # Write the header
 
 
-    for batch_idx, (real, syn, _) in enumerate(tqdm(test_loader)):
+    for batch_idx, (real, syn, gt) in enumerate(tqdm(test_loader)):
+
+        real, syn = real.to(device), syn.to(device)
+
+        real = after_load_lq(real, args)
+        syn = after_load_lq(syn, args)
+        gt = after_load_lq(gt, args)
 
         # Stage 1
-        real, syn = real.to(device), syn.to(device)
-        # data = torch.tensor((data / 255.).clip(0, 1), dtype=torch.float32, device=device)
-        # data = rearrange(data, "n h w c -> n c h w").contiguous()
-
-        # set pipeline output size
-        h, w = real.shape[2:]
-        final_size = (h, w)
-
-        # OOD Detection: Method 1
+        torch.cuda.empty_cache()
+        gc.collect()
         with torch.no_grad():
-            real_output = resnet_model(real).squeeze()
-            # real_output = (real_output > 0.5).int()
-
-            syn_output = resnet_model(syn).squeeze()
-            # syn_output = (syn_output > 0.5).int()
-        
+            real_clean, _ = run_stage1(swin_model=swinir, lq=real, device=device)
+            syn_clean, _ = run_stage1(swin_model=swinir, lq=syn, device=device)
 
 
         torch.cuda.empty_cache()
+        gc.collect()
 
-        # real = torch.tensor((real / 255.).clip(0, 1), dtype=torch.float32, device=device)
-        # syn = torch.tensor((syn / 255.).clip(0, 1), dtype=torch.float32, device=device)
-
-       
-
-        with torch.no_grad():
-            real_clean, real_clean_ft = run_stage1(swin_model=swinir, image=real, device=device)
-            syn_clean, syn_clean_ft = run_stage1(swin_model=swinir, image=syn, device=device)
-            
-            real_sim  = cosine_similarity(real_clean_ft, median_filter_4d(real_clean_ft))
-            syn_sim  = cosine_similarity(syn_clean_ft, median_filter_4d(syn_clean_ft))
-
-            real_final_prob = real_sim / real_output
-            syn_final_prob = syn_sim / syn_output
-
-        torch.cuda.empty_cache()
-
-        with torch.no_grad():
-
+        with torch.amp.autocast('cuda', dtype=torch.float16):
             real_samples = run_stage2(
             clean = real_clean,
             cldm = cldm,
@@ -341,95 +341,73 @@ def main(args):
 
 
         torch.cuda.empty_cache()
-
-        batch_real_similarities = []
-        batch_syn_similarities = []
-
-        for sample_idx, (real_sample, syn_sample) in enumerate(zip(real_samples, syn_samples)):
+        similarity_vals = []
+        gt = normalize(gt)
+        for idx, (real_sample, syn_sample) in enumerate(zip(real_samples, syn_samples)):
 
 
-            # colorfix (borrowed from StableSR, thanks for their work)
-            #real_sample = (real_sample + 1) / 2
-            #syn_sample = (syn_sample + 1) / 2
-          
             real_sample = normalize(real_sample)
             syn_sample = normalize(syn_sample)
-
 
             real_sample = wavelet_reconstruction(real_sample, real_clean)
             syn_sample = wavelet_reconstruction(syn_sample, syn_clean)
 
-
-
             real_sample = normalize(real_sample)
             syn_sample = normalize(syn_sample)
+
 
             n_real_clean = normalize(real_clean)
             n_syn_clean = normalize(syn_clean)
 
-
-            # resize to desired output size
-            #real_sample = F.interpolate(real_sample, size=final_size, mode="bicubic", antialias=True)
-            #syn_sample = F.interpolate(syn_sample, size=final_size, mode="bicubic", antialias=True)
-
-
-            #real_sample = rearrange(real_sample * 255., "n c h w -> n h w c")
-            #syn_sample = rearrange(syn_sample * 255., "n c h w -> n h w c")
-            #n_real_clean = rearrange(n_real_clean * 255., "n c h w -> n h w c")
-            #n_syn_clean = rearrange(n_syn_clean * 255., "n c h w -> n h w c")
-            #n_syn = rearrange(syn * 255., "n c h w -> n h w c")
-
-
-
-            #real_sample = real_sample.contiguous().clamp(0, 255).to(torch.uint8).cpu()
-            #syn_sample = syn_sample.contiguous().clamp(0, 255).to(torch.uint8).cpu()
-            #n_real_clean = n_real_clean.contiguous().clamp(0, 255).to(torch.uint8).cpu()
-            #n_syn_clean = n_syn_clean.contiguous().clamp(0, 255).to(torch.uint8).cpu()
-            #n_syn = n_syn.contiguous().clamp(0, 255).to(torch.uint8).cpu()
-
-
-            # Calculate PSNR
-            # real_sample =  rearrange(real_sample/255.0, "n h w c -> n c h w").contiguous()
-            # n_real_clean =  rearrange(n_real_clean/255.0, "n h w c -> n c h w").contiguous()
-            # syn_sample =  rearrange(syn_sample/255.0, "n h w c -> n c h w").contiguous()
-            # n_syn_clean =  rearrange(n_syn_clean/255.0, "n h w c -> n c h w").contiguous()
-
-            batch_real_similarities.append(psnr(real_sample, real_clean, psnr_metric))
-            batch_syn_similarities.append(psnr(syn_sample, syn_clean, psnr_metric))
-
-            # save image
-            # real_hq_name = os.path.join(f'real_hq_{batch_idx}_{sample_idx}.png')
-            # syn_hq_name = os.path.join(f'syn_hq_{batch_idx}_{sample_idx}.png')
-            # real_clean_name = os.path.join(f'real_clean_{batch_idx}_{sample_idx}.png')
-            # syn_clean_name = os.path.join(f'syn_clean_{batch_idx}_{sample_idx}.png')
-            # syn_lq_name = os.path.join(f'syn_lq_{batch_idx}_{sample_idx}.png')
-           
-            
-            #save(real_sample, cfg.test.test_result_dir, real_hq_name)
-            #save(syn_sample, cfg.test.test_result_dir, syn_hq_name)
-            #save(n_real_clean, cfg.test.test_result_dir, real_clean_name)
-            #save(n_syn_clean, cfg.test.test_result_dir, syn_clean_name)
-            #save(n_syn, cfg.test.test_result_dir, syn_lq_name)
- 
-
-
-        batch_real_similarities = np.mean(np.array(batch_real_similarities), axis=0).tolist()
-        batch_syn_similarities = np.mean(np.array(batch_syn_similarities), axis=0).tolist()
-        
-      
-
-        # Write results to CSV file
-        with open(result_path, mode='a', newline='') as file:
-            writer = csv.writer(file)
-            for i in range(len(real)):
-                writer.writerow([real_output[i].item()
-                                ,real_final_prob[i].item()
-                                ,batch_real_similarities[i]
-                                ,syn_output[i].item()
-                                ,syn_final_prob[i].item()
-                                ,batch_syn_similarities[i]])
-
     
+
+            # Image Quality Metrics Calculation
+            real_metrics = {
+                "psnr": psnr(real_sample, gt, psnr_metric),
+                "ssim": ssim(real_sample, gt, ssim_metric),
+                "lpips": lpips(real_sample, gt, lpips_metric),
+                "brisque": brisque(real_sample, brisque_metric),
+                "musiq": musiq(real_sample, musiq_metric),
+                "nima": nima(real_sample, nima_metric),
+                "niqe": niqe(real_sample, niqe_metric),
+            }
+
+            syn_metrics = {
+                "psnr": psnr(syn_sample, gt, psnr_metric),
+                "ssim": ssim(syn_sample, gt, ssim_metric),
+                "lpips": lpips(syn_sample, gt, lpips_metric),
+                "brisque": brisque(syn_sample, brisque_metric),
+                "musiq": musiq(syn_sample, musiq_metric),
+                "nima": nima(syn_sample, nima_metric),
+                "niqe": niqe(syn_sample, niqe_metric),
+            }
+            similarity_vals.append((real_metrics, syn_metrics))
+
+
+        with open(result_real_path, mode='a', newline='') as real_file, open(result_syn_path, mode='a', newline='') as syn_file:
+            real_writer = csv.writer(real_file)
+            syn_writer = csv.writer(syn_file)
+
+            for i in range(len(real)):
+                for noise_level, (real_metrics, syn_metrics) in zip(['high', 'mid', 'low'] ,similarity_vals):
+                    img_idx = batch_idx + i
+                    real_row = [img_idx,
+                        noise_level,  
+                        real_metrics["psnr"][i].item(), real_metrics["ssim"][i].item(), real_metrics["lpips"][i].item(),
+                        real_metrics["brisque"][i].item(), real_metrics["musiq"][i].item(), real_metrics["nima"][i].item(),
+                        real_metrics["niqe"][i].item()
+                    ]
+                    real_writer.writerow(real_row)
+
+                    syn_row = [img_idx,
+                        noise_level,  
+                        syn_metrics["psnr"][i].item(), syn_metrics["ssim"][i].item(), syn_metrics["lpips"][i].item(),
+                        syn_metrics["brisque"][i].item(), syn_metrics["musiq"][i].item(), syn_metrics["nima"][i].item(),
+                        syn_metrics["niqe"][i].item()
+                    ]
+                    syn_writer.writerow(syn_row)
+
+                
 
 def check_device(device: str) -> str:
     if device == "cuda":
@@ -496,3 +474,4 @@ if __name__ == "__main__":
     set_seed(args.seed)
     main(args)
     print("done!")
+

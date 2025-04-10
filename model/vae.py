@@ -5,6 +5,7 @@ from torch.nn import functional as F
 import numpy as np
 from einops import rearrange
 from typing import Optional, Any
+import gc
 
 from model.distribution import DiagonalGaussianDistribution
 from model.config import Config, AttnMode
@@ -521,6 +522,9 @@ class Decoder(nn.Module):
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
             if i_level != 0:
+                torch.cuda.empty_cache()
+                gc.collect()
+                torch.cuda.synchronize()
                 h = self.up[i_level].upsample(h)
 
         # end
