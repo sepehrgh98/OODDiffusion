@@ -16,8 +16,6 @@ node_modules/
 # Ignore Python cache directories
 __pycache__/
 
-# Ignore image files
-*.png
 
 # Ignore a specific folder (e.g., dataset or other generated data)
 data/
